@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>E-Commerce Platform</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; background: #f5f5f5; }
+    .header { background: #2c3e50; color: white; padding: 1rem 2rem; }
+    .container { max-width: 1200px; margin: 2rem auto; padding: 0 1rem; }
+    .search-bar { display: flex; gap: 1rem; margin: 1rem 0; }
+    .search-bar input { flex: 1; padding: 0.75rem; border: 1px solid #ddd; border-radius: 4px; }
+    .search-bar button { padding: 0.75rem 1.5rem; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; }
+    .products { display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 1.5rem; margin-top: 1rem; }
+    .product { background: white; border-radius: 8px; padding: 1rem; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+    .product h3 { color: #2c3e50; margin-bottom: 0.5rem; }
+    .product .price { color: #27ae60; font-size: 1.25rem; font-weight: bold; }
+    .product button { margin-top: 0.5rem; padding: 0.5rem 1rem; background: #3498db; color: white; border: none; border-radius: 4px; cursor: pointer; }
+    .status { padding: 1rem; background: white; border-radius: 8px; margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <header class="header">
+    <h1>E-Commerce Platform</h1>
+  </header>
+  <div class="container">
+    <div class="status" id="status">Loading...</div>
+    <div class="search-bar">
+      <input type="text" id="searchInput" placeholder="Search products...">
+      <button onclick="searchProducts()">Search</button>
+    </div>
+    <div class="products" id="products">Loading products...</div>
+  </div>
+  <script>
+    async function checkStatus() {
+      try {
+        const res = await fetch('/api/health');
+        const data = await res.json();
+        document.getElementById('status').innerHTML = 'Status: <strong>' + data.status + '</strong> | Service: ' + data.service;
+      } catch (e) {
+        document.getElementById('status').innerHTML = 'Status: <strong style="color:red">Error</strong>';
+      }
+    }
+    async function loadProducts() {
+      try {
+        const res = await fetch('/api/products');
+        const data = await res.json();
+        const container = document.getElementById('products');
+        if (data.products) {
+          container.innerHTML = data.products.map(p => 
+            '<div class="product"><h3>' + p.name + '</h3><p>' + p.description + '</p><p class="price">$' + p.price + '</p><button>Add to Cart</button></div>'
+          ).join('');
+        }
+      } catch (e) {
+        document.getElementById('products').innerHTML = 'Failed to load products';
+      }
+    }
+    async function searchProducts() {
+      const q = document.getElementById('searchInput').value;
+      if (!q) return;
+      document.getElementById('products').innerHTML = 'Searching...';
+      try {
+        const res = await fetch('/search?q=' + encodeURIComponent(q));
+        const data = await res.json();
+        const container = document.getElementById('products');
+        if (data.results) {
+          container.innerHTML = data.results.map(p => 
+            '<div class="product"><h3>' + p.name + '</h3><p>' + p.description + '</p><p class="price">$' + p.price + '</p></div>'
+          ).join('') || 'No results found';
+        }
+      } catch (e) {
+        document.getElementById('products').innerHTML = 'Search failed';
+      }
+    }
+    checkStatus();
+    loadProducts();
+  </script>
+</body>
+</html>

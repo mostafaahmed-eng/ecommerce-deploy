@@ -1,0 +1,64 @@
+---
+- name: Setup Docker
+  hosts: all
+  become: yes
+  tasks:
+    - name: Install Docker
+      ansible.builtin.apt:
+        name: docker.io
+        state: present
+        update_cache: yes
+
+    - name: Start Docker
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Add user to docker group
+      ansible.builtin.user:
+        name: "{{ ansible_user }}"
+        groups: docker
+        append: yes
+
+---
+- name: Setup Kubernetes
+  hosts: k8s_master
+  become: yes
+  tasks:
+    - name: Initialize cluster
+      ansible.builtin.shell: |
+        kubeadm init --pod-network-cidr=10.244.0.0/16
+
+    - name: Setup kubeconfig
+      ansible.builtin.file:
+        path: /home/{{ ansible_user }}/.kube
+        state: directory
+        owner: "{{ ansible_user }}"
+
+    - name: Copy admin.conf
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/{{ ansible_user }}/.kube/config
+        remote_src: yes
+        owner: "{{ ansible_user }}"
+
+    - name: Install Calico
+      ansible.builtin.shell: |
+        kubectl apply -f https://docs.projectcalico.org/v3.25/manifests/calico.yaml
+
+---
+- name: Deploy E-Commerce
+  hosts: k8s_master
+  tasks:
+    - name: Create namespace
+      ansible.builtin.shell: |
+        kubectl create namespace ecommerce
+
+    - name: Deploy services
+      ansible.builtin.shell: |
+        kubectl apply -f /tmp/ecommerce/infrastructure/k8s/ -n ecommerce
+
+    - name: Wait for deployments
+      ansible.builtin.shell: |
+        kubectl wait --for=condition=available deployment/frontend deployment/backend -n ecommerce --timeout=300s

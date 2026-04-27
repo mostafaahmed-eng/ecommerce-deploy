@@ -1,0 +1,42 @@
+name: E-Commerce CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    services:
+      docker:
+        image: docker:24.0
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Build Docker images
+        run: |
+          for svc in frontend backend payment search cart product api; do
+            docker build -t ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/$svc:${{ github.sha }} ./services/$svc
+            docker push ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/$svc:${{ github.sha }}
+          done
+
+  deploy:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Deploy to Kubernetes
+        run: |
+          kubectl apply -f infrastructure/k8s/base/
+          kubectl apply -f infrastructure/k8s/frontend/
+          kubectl apply -f infrastructure/k8s/backend/
+        env:
+          KUBECONFIG: ${{ secrets.KUBECONFIG }}
