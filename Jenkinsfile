@@ -2,7 +2,7 @@ pipeline {
     agent any
     
     environment {
-        IMAGE_NAME = 'mostafaahmed/ecommerce-deploy'
+        IMAGE_NAME = 'mostafaanwar862004/ecommerce-deploy'
     }
 
     stages {
@@ -42,17 +42,17 @@ pipeline {
 
         stage('List Images') {
             steps {
-                sh 'docker images | grep mostafaahmed'
+                sh 'docker images | grep mostafaanwar'
             }
         }
     }
 
     post {
         success {
-            echo 'Pipeline succeeded! All images built and pushed!'
+            echo '✅ Pipeline succeeded! All images pushed to Docker Hub!'
         }
         failure {
-            echo 'Pipeline failed!'
+            echo '❌ Pipeline failed!'
         }
     }
 }
