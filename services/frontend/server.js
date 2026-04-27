@@ -43,6 +43,7 @@ app.get('/', (req, res) => {
   res.send(`<!DOCTYPE html>
 <html><head><title>E-Commerce</title></head>
 <body><h1>Welcome to E-Commerce Platform</h1>
+<h2>By Team : Mostafa, 3 Ahmed, Omar,Momaen</h2>
 <p>API: <a href="/api/health">Health Check</a></p>
 <p>Products: <a href="/api/products">View Products</a></p></body></html>`);
 });
