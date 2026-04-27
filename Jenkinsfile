@@ -26,20 +26,21 @@ pipeline {
         }
 
         stage('Push Images') {
-            steps {
-                sh '''
-                    echo ${GITHUB_TOKEN} | docker login ghcr.io -u ${GITHUB_ACTOR} --password-stdin
-                    docker push ${IMAGE_NAME}/frontend:latest
-                    docker push ${IMAGE_NAME}/backend:latest
-                    docker push ${IMAGE_NAME}/payment:latest
-                    docker push ${IMAGE_NAME}/search:latest
-                    docker push ${IMAGE_NAME}/cart:latest
-                    docker push ${IMAGE_NAME}/product:latest
-                    docker push ${IMAGE_NAME}/api:latest
-                '''
-            }
+    steps {
+        withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
+            sh '''
+                echo $GITHUB_TOKEN | docker login ghcr.io -u mostafaahmed-eng --password-stdin
+                docker push ${IMAGE_NAME}/frontend:latest
+                docker push ${IMAGE_NAME}/backend:latest
+                docker push ${IMAGE_NAME}/payment:latest
+                docker push ${IMAGE_NAME}/search:latest
+                docker push ${IMAGE_NAME}/cart:latest
+                docker push ${IMAGE_NAME}/product:latest
+                docker push ${IMAGE_NAME}/api:latest
+            '''
         }
     }
+}
 
     post {
         failure {
