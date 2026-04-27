@@ -34,4 +34,4 @@ docker-compose up -d
 kubectl apply -f infrastructure/k8s/base/
 kubectl apply -f infrastructure/k8s/frontend/
 kubectl apply -f infrastructure/k8s/backend/
-```
+```# test
