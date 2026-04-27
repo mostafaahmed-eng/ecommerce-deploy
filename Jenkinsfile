@@ -8,17 +8,16 @@ pipeline {
             }
         }
 
-        stage('Build frontend') {
+        stage('Build') {
             steps {
                 sh 'docker build -t mostafaanwar862004/ecommerce-deploy/frontend:latest ./services/frontend'
             }
         }
 
-        stage('Push frontend') {
+        stage('Push') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'docker-hub', usernameVariable: 'U', passwordVariable: 'P')]) {
-                    sh 'echo $P | docker login -u $U --password-stdin'
-                    sh 'docker push mostafaanwar862004/ecommerce-deploy/frontend:latest'
+                withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'U', passwordVariable: 'P')]) {
+                    sh 'docker login -u $U -p $P && docker push mostafaanwar862004/ecommerce-deploy/frontend:latest'
                 }
             }
         }
@@ -26,6 +25,5 @@ pipeline {
     
     post {
         success { echo 'SUCCESS!' }
-        failure { echo 'FAILED!' }
     }
 }
