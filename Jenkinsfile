@@ -28,9 +28,7 @@ pipeline {
         stage('Login to GHCR') {
             steps {
                 withCredentials([usernamePassword(credentialsId: 'ghcr-creds', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
-                    sh '''
-                        echo $PASS | docker login ghcr.io -u $USER --password-stdin
-                    '''
+                    sh 'echo $PASS | docker login ghcr.io -u $USER --password-stdin'
                 }
             }
         }
@@ -45,14 +43,32 @@ pipeline {
                 }
             }
         }
+
+        stage('Deploy to Kubernetes') {
+            steps {
+                withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+                    sh '''
+                        mkdir -p ~/.kube
+                        cp $KUBECONFIG ~/.kube/config
+                        kubectl apply -f infrastructure/k8s/base/
+                        kubectl apply -f infrastructure/k8s/frontend/
+                        kubectl apply -f infrastructure/k8s/backend/
+                        kubectl apply -f infrastructure/k8s/payment/
+                        kubectl apply -f infrastructure/k8s/search/
+                        kubectl rollout status deployment/frontend -n ecommerce --timeout=120s
+                        kubectl rollout status deployment/backend -n ecommerce --timeout=120s
+                    '''
+                }
+            }
+        }
     }
 
     post {
         success {
-            echo 'GAMMED YA GAMMED SUCCESS! All images pushed to GHCR!'
+            echo 'GAMMED YA GAMMED SUCCESS! All images built, pushed and deployed to K8s!'
         }
         failure {
-            echo ' FAILED! Check logs.'
+            echo '7OMS YA 7OMS FAILED! Check logs.'
         }
     }
 }
