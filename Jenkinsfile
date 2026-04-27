@@ -47,7 +47,7 @@ pipeline {
         stage('Deploy to Kubernetes') {
     steps {
         withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
-            sh 'kubectl apply -f infrastructure/k8s/'
+            sh 'kubectl apply -f infrastructure/k8s/ -R'
             sh 'kubectl rollout status deployment/frontend -n ecommerce --timeout=120s'
             sh 'kubectl rollout status deployment/backend -n ecommerce --timeout=120s'
         }
