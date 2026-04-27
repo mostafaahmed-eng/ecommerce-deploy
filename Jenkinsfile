@@ -2,7 +2,7 @@ pipeline {
     agent any
     
     environment {
-        IMAGE_NAME = 'mostafaahmed-eng/ecommerce-deploy'
+        IMAGE_NAME = 'mostafaahmed/ecommerce-deploy'
     }
 
     stages {
@@ -25,9 +25,9 @@ pipeline {
 
         stage('Push Images') {
             steps {
-                withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
+                withCredentials([usernamePassword(credentialsId: 'docker-hub', usernameVariable: 'DOCKER_USER', passwordVariable: 'DOCKER_PASS')]) {
                     sh '''
-                        echo $GITHUB_TOKEN | docker login ghcr.io -u mostafaahmed-eng --password-stdin
+                        echo $DOCKER_PASS | docker login -u $DOCKER_USER --password-stdin
                         docker push ${IMAGE_NAME}/frontend:latest
                         docker push ${IMAGE_NAME}/backend:latest
                         docker push ${IMAGE_NAME}/payment:latest
@@ -42,12 +42,15 @@ pipeline {
 
         stage('List Images') {
             steps {
-                sh 'docker images'
+                sh 'docker images | grep mostafaahmed'
             }
         }
     }
 
     post {
+        success {
+            echo 'Pipeline succeeded! All images built and pushed!'
+        }
         failure {
             echo 'Pipeline failed!'
         }
