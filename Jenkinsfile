@@ -1,9 +1,7 @@
-
 pipeline {
     agent any
     
     environment {
-        DOCKER_REGISTRY = 'ghcr.io'
         IMAGE_NAME = 'mostafaahmed-eng/ecommerce-deploy'
     }
 
@@ -26,21 +24,28 @@ pipeline {
         }
 
         stage('Push Images') {
-    steps {
-        withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
-            sh '''
-                echo $GITHUB_TOKEN | docker login ghcr.io -u mostafaahmed-eng --password-stdin
-                docker push ${IMAGE_NAME}/frontend:latest
-                docker push ${IMAGE_NAME}/backend:latest
-                docker push ${IMAGE_NAME}/payment:latest
-                docker push ${IMAGE_NAME}/search:latest
-                docker push ${IMAGE_NAME}/cart:latest
-                docker push ${IMAGE_NAME}/product:latest
-                docker push ${IMAGE_NAME}/api:latest
-            '''
+            steps {
+                withCredentials([string(credentialsId: 'github-token', variable: 'GITHUB_TOKEN')]) {
+                    sh '''
+                        echo $GITHUB_TOKEN | docker login ghcr.io -u mostafaahmed-eng --password-stdin
+                        docker push ${IMAGE_NAME}/frontend:latest
+                        docker push ${IMAGE_NAME}/backend:latest
+                        docker push ${IMAGE_NAME}/payment:latest
+                        docker push ${IMAGE_NAME}/search:latest
+                        docker push ${IMAGE_NAME}/cart:latest
+                        docker push ${IMAGE_NAME}/product:latest
+                        docker push ${IMAGE_NAME}/api:latest
+                    '''
+                }
+            }
+        }
+
+        stage('List Images') {
+            steps {
+                sh 'docker images'
+            }
         }
     }
-}
 
     post {
         failure {
