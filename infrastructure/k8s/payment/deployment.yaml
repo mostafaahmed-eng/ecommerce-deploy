@@ -4,7 +4,7 @@ metadata:
   name: payment
   namespace: ecommerce
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: payment
@@ -15,17 +15,9 @@ spec:
     spec:
       containers:
       - name: payment
-        image: ecommerce/payment:latest
+        image: ghcr.io/mostafaahmed-eng/ecommerce-deploy/payment:latest
         ports:
         - containerPort: 4200
-        resources:
-          requests:
-            cpu: 100m
-            memory: 128Mi
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 4200
 
 ---
 apiVersion: v1

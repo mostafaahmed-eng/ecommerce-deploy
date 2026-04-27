@@ -4,7 +4,7 @@ metadata:
   name: backend
   namespace: ecommerce
 spec:
-  replicas: 3
+  replicas: 2
   selector:
     matchLabels:
       app: backend
@@ -12,32 +12,12 @@ spec:
     metadata:
       labels:
         app: backend
-      annotations:
-        prometheus.io/scrape: "true"
-        prometheus.io/port: "4000"
     spec:
       containers:
       - name: backend
-        image: ecommerce/backend:latest
-        imagePullPolicy: Always
+        image: ghcr.io/mostafaahmed-eng/ecommerce-deploy/backend:latest
         ports:
         - containerPort: 4000
-        resources:
-          requests:
-            cpu: 200m
-            memory: 256Mi
-          limits:
-            cpu: 1000m
-            memory: 512Mi
-        livenessProbe:
-          httpGet:
-            path: /api/health
-            port: 4000
-          initialDelaySeconds: 20
-        readinessProbe:
-          httpGet:
-            path: /api/ready
-            port: 4000
 
 ---
 apiVersion: v1
@@ -52,24 +32,3 @@ spec:
     targetPort: 4000
   selector:
     app: backend
-
----
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: backend-hpa
-  namespace: ecommerce
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: backend
-  minReplicas: 3
-  maxReplicas: 15
-  metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 70

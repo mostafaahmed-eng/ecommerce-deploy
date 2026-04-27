@@ -4,7 +4,7 @@ metadata:
   name: search
   namespace: ecommerce
 spec:
-  replicas: 2
+  replicas: 1
   selector:
     matchLabels:
       app: search
@@ -15,17 +15,9 @@ spec:
     spec:
       containers:
       - name: search
-        image: ecommerce/search:latest
+        image: ghcr.io/mostafaahmed-eng/ecommerce-deploy/search:latest
         ports:
         - containerPort: 5000
-        resources:
-          requests:
-            cpu: 100m
-            memory: 128Mi
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 5000
 
 ---
 apiVersion: v1
