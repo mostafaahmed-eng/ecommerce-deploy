@@ -16,7 +16,7 @@ pipeline {
 
         stage('Push') {
             steps {
-                withCredentials([usernamePassword(credentialsId: 'dockerhub', usernameVariable: 'U', passwordVariable: 'P')]) {
+                withCredentials([usernamePassword(credentialsId: 'docker-hub', usernameVariable: 'U', passwordVariable: 'P')]) {
                     sh 'docker login -u $U -p $P && docker push mostafaanwar862004/ecommerce-deploy/frontend:latest'
                 }
             }
