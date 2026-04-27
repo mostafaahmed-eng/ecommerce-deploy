@@ -1,7 +1,13 @@
 pipeline {
     agent any
-    
+
+    environment {
+        REGISTRY = "ghcr.io"
+        IMAGE_NAME = "mostafaahmed-eng/ecommerce-deploy"
+    }
+
     stages {
+
         stage('Checkout') {
             steps {
                 git branch: 'main', url: 'https://github.com/mostafaahmed-eng/ecommerce-deploy.git'
@@ -13,7 +19,7 @@ pipeline {
                 script {
                     def services = ['frontend', 'backend', 'payment', 'search', 'cart', 'product', 'api']
                     services.each { svc ->
-                        sh "docker build -t ghcr.io/mostafaahmed-eng/ecommerce-deploy/${svc}:latest ./services/${svc}"
+                        sh "docker build -t ${REGISTRY}/${IMAGE_NAME}/${svc}:latest ./services/${svc}"
                     }
                 }
             }
@@ -21,26 +27,32 @@ pipeline {
 
         stage('Login to GHCR') {
             steps {
-                sh 'echo $GITHUB_TOKEN | docker login ghcr.io -u $GITHUB_ACTOR --password-stdin'
+                withCredentials([usernamePassword(credentialsId: 'ghcr-creds', usernameVariable: 'USER', passwordVariable: 'PASS')]) {
+                    sh '''
+                        echo $PASS | docker login ghcr.io -u $USER --password-stdin
+                    '''
+                }
             }
         }
 
         stage('Push to GHCR') {
             steps {
-                sh '''
-                    docker push ghcr.io/mostafaahmed-eng/ecommerce-deploy/frontend:latest
-                    docker push ghcr.io/mostafaahmed-eng/ecommerce-deploy/backend:latest
-                    docker push ghcr.io/mostafaahmed-eng/ecommerce-deploy/payment:latest
-                    docker push ghcr.io/mostafaahmed-eng/ecommerce-deploy/search:latest
-                    docker push ghcr.io/mostafaahmed-eng/ecommerce-deploy/cart:latest
-                    docker push ghcr.io/mostafaahmed-eng/ecommerce-deploy/product:latest
-                    docker push ghcr.io/mostafaahmed-eng/ecommerce-deploy/api:latest
-                '''
+                script {
+                    def services = ['frontend', 'backend', 'payment', 'search', 'cart', 'product', 'api']
+                    services.each { svc ->
+                        sh "docker push ${REGISTRY}/${IMAGE_NAME}/${svc}:latest"
+                    }
+                }
             }
         }
     }
-    
+
     post {
-        success { echo 'SUCCESS! All images pushed to GHCR!' }
+        success {
+            echo 'GAMMED YA GAMMED SUCCESS! All images pushed to GHCR!'
+        }
+        failure {
+            echo ' FAILED! Check logs.'
+        }
     }
 }
