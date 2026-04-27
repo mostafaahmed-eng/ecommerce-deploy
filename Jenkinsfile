@@ -60,7 +60,7 @@ pipeline {
             echo 'GAMMED YA GAMMED SUCCESS! All images built, pushed and deployed to K8s!'
         }
         failure {
-            echo '7OMS YA 7OMS FAILED! Check logs.'
+            echo 'bal7 bal7 FAILED! Check logs.'
         }
     }
 }
