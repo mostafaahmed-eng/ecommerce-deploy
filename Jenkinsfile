@@ -48,23 +48,21 @@ pipeline {
             steps {
                 withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
                     sh '''
-                        mkdir -p ~/.kube
-                        cp $KUBECONFIG ~/.kube/config
-                        kubectl apply -f infrastructure/k8s/base/
-                        kubectl apply -f infrastructure/k8s/frontend/
-                        kubectl apply -f infrastructure/k8s/backend/
-                        kubectl apply -f infrastructure/k8s/payment/
-                        kubectl apply -f infrastructure/k8s/search/
-                        kubectl apply -f infrastructure/k8s/cart/
-                        kubectl apply -f infrastructure/k8s/product/
-                        kubectl apply -f infrastructure/k8s/api/
-                        kubectl rollout status deployment/frontend -n ecommerce --timeout=120s
-                        kubectl rollout status deployment/backend -n ecommerce --timeout=120s
-                        kubectl rollout status deployment/payment -n ecommerce --timeout=120s
-                        kubectl rollout status deployment/search -n ecommerce --timeout=120s
-                        kubectl rollout status deployment/cart -n ecommerce --timeout=120s
-                        kubectl rollout status deployment/product -n ecommerce --timeout=120s
-                        kubectl rollout status deployment/api -n ecommerce --timeout=120s
+                        kubectl --kubeconfig=$KUBECONFIG apply -f infrastructure/k8s/base/
+                        kubectl --kubeconfig=$KUBECONFIG apply -f infrastructure/k8s/frontend/
+                        kubectl --kubeconfig=$KUBECONFIG apply -f infrastructure/k8s/backend/
+                        kubectl --kubeconfig=$KUBECONFIG apply -f infrastructure/k8s/payment/
+                        kubectl --kubeconfig=$KUBECONFIG apply -f infrastructure/k8s/search/
+                        kubectl --kubeconfig=$KUBECONFIG apply -f infrastructure/k8s/cart/
+                        kubectl --kubeconfig=$KUBECONFIG apply -f infrastructure/k8s/product/
+                        kubectl --kubeconfig=$KUBECONFIG apply -f infrastructure/k8s/api/
+                        kubectl --kubeconfig=$KUBECONFIG rollout status deployment/frontend -n ecommerce --timeout=120s
+                        kubectl --kubeconfig=$KUBECONFIG rollout status deployment/backend -n ecommerce --timeout=120s
+                        kubectl --kubeconfig=$KUBECONFIG rollout status deployment/payment -n ecommerce --timeout=120s
+                        kubectl --kubeconfig=$KUBECONFIG rollout status deployment/search -n ecommerce --timeout=120s
+                        kubectl --kubeconfig=$KUBECONFIG rollout status deployment/cart -n ecommerce --timeout=120s
+                        kubectl --kubeconfig=$KUBECONFIG rollout status deployment/product -n ecommerce --timeout=120s
+                        kubectl --kubeconfig=$KUBECONFIG rollout status deployment/api -n ecommerce --timeout=120s
                     '''
                 }
             }
