@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: ecommerce
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+      - name: api
+        image: ghcr.io/mostafaahmed-eng/ecommerce-deploy/api:latest
+        ports:
+        - containerPort: 4600
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: ecommerce
+spec:
+  type: ClusterIP
+  ports:
+  - port: 4600
+    targetPort: 4600
+  selector:
+    app: api

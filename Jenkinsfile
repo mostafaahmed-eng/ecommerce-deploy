@@ -45,14 +45,30 @@ pipeline {
         }
 
         stage('Deploy to Kubernetes') {
-    steps {
-        withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
-            sh 'kubectl apply -f infrastructure/k8s/ -R'
-            sh 'kubectl rollout status deployment/frontend -n ecommerce --timeout=120s'
-            sh 'kubectl rollout status deployment/backend -n ecommerce --timeout=120s'
+            steps {
+                withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+                    sh '''
+                        mkdir -p ~/.kube
+                        cp $KUBECONFIG ~/.kube/config
+                        kubectl apply -f infrastructure/k8s/base/
+                        kubectl apply -f infrastructure/k8s/frontend/
+                        kubectl apply -f infrastructure/k8s/backend/
+                        kubectl apply -f infrastructure/k8s/payment/
+                        kubectl apply -f infrastructure/k8s/search/
+                        kubectl apply -f infrastructure/k8s/cart/
+                        kubectl apply -f infrastructure/k8s/product/
+                        kubectl apply -f infrastructure/k8s/api/
+                        kubectl rollout status deployment/frontend -n ecommerce --timeout=120s
+                        kubectl rollout status deployment/backend -n ecommerce --timeout=120s
+                        kubectl rollout status deployment/payment -n ecommerce --timeout=120s
+                        kubectl rollout status deployment/search -n ecommerce --timeout=120s
+                        kubectl rollout status deployment/cart -n ecommerce --timeout=120s
+                        kubectl rollout status deployment/product -n ecommerce --timeout=120s
+                        kubectl rollout status deployment/api -n ecommerce --timeout=120s
+                    '''
+                }
+            }
         }
-    }
-}
     }
 
     post {
@@ -60,7 +76,7 @@ pipeline {
             echo 'GAMMED YA GAMMED SUCCESS! All images built, pushed and deployed to K8s!'
         }
         failure {
-            echo 'bal7 bal7 bal7 FAILED! Check logs.'
+            echo '7OMS YA 7OMS FAILED! Check logs.'
         }
     }
 }
