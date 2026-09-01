@@ -55,6 +55,8 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
 
 Set the first output as `ADMIN_PASSWORD_HASH` and the second as `ADMIN_SESSION_SECRET`. The local receipt volume is private to the payment container; it is not served by Nginx. Customers receive an order ID and a one-time tracking token, and must present both to check status or upload a receipt. The token is stored only as a SHA-256 hash.
 
+When putting an scrypt hash in Docker Compose's `.env`, replace each `$` with `$$`; Compose passes `$$` through as a literal dollar sign. This avoids accidental environment-variable interpolation inside the hash.
+
 The flow is: customer creates order → receives Vodafone Cash instructions → admin notification → customer transfers and uploads a receipt → owner checks the real transfer → owner approves or rejects → customer checks the final status. Receipt uploads only set `receipt_submitted`; they never set `paid`.
 
 The owner dashboard API is under `/api/admin`; use `/admin` as the entry point. Authentication uses a password hash, HttpOnly SameSite=Strict session cookie, CSRF token, expiry, generic failures, and login rate limiting. For ECS, use AWS Secrets Manager to inject `ADMIN_USERNAME`, `ADMIN_PASSWORD_HASH`, `ADMIN_SESSION_SECRET`, and optional Telegram values. Do not set them as Terraform variables or task-definition plaintext.
