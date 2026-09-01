@@ -35,6 +35,7 @@ app.use(compression());
 app.use(morgan('combined'));
 app.use(express.json());
 app.use('/assets', express.static(path.join(__dirname, 'public/assets'), { fallthrough: false, maxAge: '7d' }));
+app.use(express.static(path.join(__dirname, 'public'), { index: 'index.html', maxAge: '1h' }));
 
 app.get('/api/health', (req, res) => {
   res.json({ status: 'healthy', service: 'frontend', timestamp: new Date().toISOString() });

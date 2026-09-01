@@ -28,9 +28,10 @@ test('all services expose healthy endpoints', async () => {
   }
 });
 
-test('frontend renders the portfolio storefront with a nonce-based CSP', async () => {
+test('frontend renders the Arabic storefront with a secure CSP', async () => {
   const response = await request(frontend).get('/').expect(200);
-  assert.match(response.text, /Northstar Market/);
+  assert.match(response.text, /dir="rtl"/);
+  assert.match(response.text, /إتمام الطلب/);
   assert.match(response.headers['content-security-policy'], /nonce-/);
   assert.doesNotMatch(response.headers['content-security-policy'], /unsafe-inline/);
 });
