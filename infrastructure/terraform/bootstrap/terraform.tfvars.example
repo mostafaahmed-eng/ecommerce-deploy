@@ -1,0 +1,4 @@
+aws_region        = "us-east-1"
+project_name      = "ecommerce-demo"
+github_repository = "mostafaahmed-eng/ecommerce-deploy"
+deploy_branch     = "main"

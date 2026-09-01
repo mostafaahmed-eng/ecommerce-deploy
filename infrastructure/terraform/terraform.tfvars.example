@@ -1,0 +1,6 @@
+aws_region   = "us-east-1"
+project_name = "ecommerce-demo"
+environment  = "production"
+
+# Set true only for short-lived demo environments that must be destroyed easily.
+allow_repository_force_delete = false

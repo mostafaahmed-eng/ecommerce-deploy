@@ -1,0 +1,28 @@
+{
+  "name": "ecommerce-deploy",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Containerized e-commerce demo with automated AWS deployment",
+  "workspaces": [
+    "services/api",
+    "services/backend",
+    "services/cart",
+    "services/frontend",
+    "services/payment",
+    "services/product",
+    "services/search"
+  ],
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "check": "npm run test && npm run check:compose",
+    "check:compose": "docker compose config --quiet",
+    "start": "docker compose up --build",
+    "stop": "docker compose down --remove-orphans"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "supertest": "^7.1.4"
+  }
+}

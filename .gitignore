@@ -1,0 +1,14 @@
+node_modules/
+.env
+*.log
+coverage/
+dist/
+build/
+.DS_Store
+.git/
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+uploads/

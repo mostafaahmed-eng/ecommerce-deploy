@@ -1,0 +1,205 @@
+name: CI and AWS Deploy
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: production-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION || 'us-east-1' }}
+  PROJECT_NAME: ecommerce-demo
+  TF_IN_AUTOMATION: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Test and validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run service tests
+        run: npm test
+
+      - name: Validate Docker Compose
+        run: docker compose config --quiet
+
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: v1.31.4
+
+      - name: Render Kubernetes manifests
+        run: kubectl kustomize infrastructure/k8s > /tmp/ecommerce-kubernetes.yaml
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive infrastructure/terraform
+
+      - name: Initialize Terraform without remote state
+        if: github.event_name == 'pull_request'
+        working-directory: infrastructure/terraform
+        run: terraform init -backend=false
+
+      - name: Validate Terraform
+        if: github.event_name == 'pull_request'
+        working-directory: infrastructure/terraform
+        run: terraform validate
+
+  provision-registry:
+    name: Provision ECR repositories
+    if: github.event_name != 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Initialize Terraform
+        working-directory: infrastructure/terraform
+        run: >-
+          terraform init
+          -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}"
+          -backend-config="key=ecommerce/production/terraform.tfstate"
+          -backend-config="region=${{ env.AWS_REGION }}"
+          -backend-config="encrypt=true"
+
+      - name: Create image repositories before the first build
+        working-directory: infrastructure/terraform
+        run: >-
+          terraform apply -auto-approve
+          -var="aws_region=${{ env.AWS_REGION }}"
+          -var="image_tag=${{ github.sha }}"
+          -target='aws_ecr_repository.service'
+          -target='aws_ecr_lifecycle_policy.service'
+
+  build:
+    name: Build ${{ matrix.service }}
+    if: github.event_name != 'pull_request'
+    needs: provision-registry
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [frontend, backend, payment, search, cart, product, api]
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build and push immutable image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./services/${{ matrix.service }}
+          push: true
+          provenance: true
+          sbom: true
+          tags: |
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.PROJECT_NAME }}/${{ matrix.service }}:${{ github.sha }}
+            ${{ steps.login-ecr.outputs.registry }}/${{ env.PROJECT_NAME }}/${{ matrix.service }}:latest
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.service }}
+
+  deploy:
+    name: Deploy to ECS
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      application_url: ${{ steps.outputs.outputs.application_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.9.8
+
+      - name: Initialize Terraform
+        working-directory: infrastructure/terraform
+        run: >-
+          terraform init
+          -backend-config="bucket=${{ secrets.TF_STATE_BUCKET }}"
+          -backend-config="key=ecommerce/production/terraform.tfstate"
+          -backend-config="region=${{ env.AWS_REGION }}"
+          -backend-config="encrypt=true"
+
+      - name: Plan deployment
+        working-directory: infrastructure/terraform
+        run: >-
+          terraform plan -out=tfplan
+          -var="aws_region=${{ env.AWS_REGION }}"
+          -var="image_tag=${{ github.sha }}"
+
+      - name: Apply deployment
+        working-directory: infrastructure/terraform
+        run: terraform apply -auto-approve tfplan
+
+      - id: outputs
+        name: Export application URL
+        working-directory: infrastructure/terraform
+        run: echo "application_url=$(terraform output -raw application_url)" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for ECS stability
+        run: >-
+          aws ecs wait services-stable
+          --cluster "${PROJECT_NAME}-production"
+          --services "${PROJECT_NAME}-production"
+
+      - name: Smoke test the public endpoint
+        run: curl --fail --retry 12 --retry-delay 10 "${{ steps.outputs.outputs.application_url }}/api/health"
+
+      - name: Publish deployment summary
+        run: |
+          echo "## AWS deployment complete" >> "$GITHUB_STEP_SUMMARY"
+          echo "Application: ${{ steps.outputs.outputs.application_url }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "Image tag: \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
