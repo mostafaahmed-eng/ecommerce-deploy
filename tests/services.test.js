@@ -36,6 +36,15 @@ test('frontend renders the Arabic storefront with a secure CSP', async () => {
   assert.doesNotMatch(response.headers['content-security-policy'], /unsafe-inline/);
 });
 
+test('storefront client includes persisted bilingual and cart-drawer controls', async () => {
+  const response = await request(frontend).get('/app.js').expect(200);
+  assert.match(response.text, /store-language/);
+  assert.match(response.text, /document\.documentElement\.dir/);
+  assert.match(response.text, /close\('cart'\);checkout\(\)/);
+  assert.match(response.text, /e\.key==='Escape'/);
+  assert.match(response.text, /backdrop.*close\('cart'\)/);
+});
+
 test('product filtering and lookup work', async () => {
   const filtered = await request(product)
     .get('/products?category=computers&maxPrice=16000')
