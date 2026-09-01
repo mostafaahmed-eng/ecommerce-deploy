@@ -1,75 +1,26 @@
 const express = require('express');
 const cors = require('cors');
-const { DynamoDBClient } = require('@aws-sdk/client-dynamodb');
-const { DynamoDBDocumentClient, ScanCommand, GetCommand } = require('@aws-sdk/lib-dynamodb');
+const catalog = require('../data/products.json');
 require('dotenv').config();
-
-const app = express();
-const PORT = process.env.PORT || 4500;
-const PRODUCTS_TABLE = process.env.PRODUCTS_TABLE;
-const dynamodb = PRODUCTS_TABLE
-  ? DynamoDBDocumentClient.from(new DynamoDBClient({}), { marshallOptions: { removeUndefinedValues: true } })
-  : null;
-
-app.use(cors());
-app.use(express.json());
-
-const products = [
-  { id: 1, name: 'Laptop Pro', description: 'High-performance laptop', price: 1299.99, stock: 50, category: 'electronics' },
-  { id: 2, name: 'Wireless Mouse', description: 'Ergonomic mouse', price: 29.99, stock: 200, category: 'accessories' },
-  { id: 3, name: 'USB-C Hub', description: '7-in-1 hub', price: 49.99, stock: 150, category: 'accessories' },
-  { id: 4, name: 'Monitor 27"', description: '4K Monitor', price: 399.99, stock: 75, category: 'electronics' },
-  { id: 5, name: 'Keyboard', description: 'Mechanical keyboard', price: 89.99, stock: 120, category: 'accessories' }
-];
-
-const loadProducts = async () => {
-  if (!dynamodb) return products;
-  const response = await dynamodb.send(new ScanCommand({ TableName: PRODUCTS_TABLE }));
-  return (response.Items || []).sort((a, b) => String(a.id).localeCompare(String(b.id), undefined, { numeric: true }));
-};
-
-const loadProduct = async (id) => {
-  if (!dynamodb) return products.find((product) => product.id === Number(id));
-  const response = await dynamodb.send(new GetCommand({ TableName: PRODUCTS_TABLE, Key: { id: String(id) } }));
-  return response.Item;
-};
-
-app.get('/health', (req, res) => res.json({
-  status: 'healthy',
-  service: 'product',
-  catalogSource: PRODUCTS_TABLE ? 'dynamodb' : 'embedded-demo'
-}));
-
-app.get('/products', async (req, res) => {
-  try {
-    const { category, minPrice, maxPrice } = req.query;
-    let filtered = await loadProducts();
-    if (category) filtered = filtered.filter(p => p.category === category);
-    if (minPrice) filtered = filtered.filter(p => Number(p.price) >= Number(minPrice));
-    if (maxPrice) filtered = filtered.filter(p => Number(p.price) <= Number(maxPrice));
-    res.json({ products: filtered, total: filtered.length });
-  } catch (error) {
-    console.error('Failed to load product catalog', error);
-    res.status(503).json({ error: 'Product catalog unavailable' });
-  }
-});
-
-app.get('/products/:id', async (req, res) => {
-  try {
-    const product = await loadProduct(req.params.id);
-    if (!product) return res.status(404).json({ error: 'Not found' });
-    res.json(product);
-  } catch (error) {
-    console.error('Failed to load product', error);
-    res.status(503).json({ error: 'Product catalog unavailable' });
-  }
-});
-
-if (require.main === module) {
-  const server = app.listen(PORT, '0.0.0.0', () => console.log(`Product service on port ${PORT}`));
-  const shutdown = () => server.close(() => process.exit(0));
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+const app = express(), PORT = process.env.PORT || 4500;
+const CATEGORIES = ['computers','mobile-devices','accessories','audio','storage','gaming','wearables','home-office','home-appliances'];
+const labels = { computers:'Computers', 'mobile-devices':'Mobile Devices', accessories:'Accessories', audio:'Audio', storage:'Storage', gaming:'Gaming', wearables:'Wearables', 'home-office':'Home Office', 'home-appliances':'Home Appliances' };
+app.use(cors()); app.use(express.json());
+function invalid(res, message) { return res.status(400).json({ error: message }); }
+function filtered(query) {
+  const { category, q, minPrice, maxPrice, inStock, sort } = query;
+  if (category && !CATEGORIES.includes(category)) throw new Error('Invalid category');
+  if (minPrice !== undefined && (!/^\d+$/.test(minPrice) || Number(minPrice) < 0)) throw new Error('Invalid minimum price');
+  if (maxPrice !== undefined && (!/^\d+$/.test(maxPrice) || Number(maxPrice) < 0)) throw new Error('Invalid maximum price');
+  if (minPrice !== undefined && maxPrice !== undefined && Number(minPrice) > Number(maxPrice)) throw new Error('Minimum price cannot exceed maximum price');
+  if (inStock !== undefined && !['true','false'].includes(inStock)) throw new Error('Invalid inStock value');
+  if (sort && !['featured','price-asc','price-desc','name-asc'].includes(sort)) throw new Error('Invalid sort value');
+  const text = (q || '').trim().toLowerCase(); let products = catalog.filter(product => (!category || product.category === category) && (!text || [product.name, product.description, labels[product.category]].join(' ').toLowerCase().includes(text)) && (minPrice === undefined || product.price >= Number(minPrice)) && (maxPrice === undefined || product.price <= Number(maxPrice)) && (inStock !== 'true' || (product.available && product.stock > 0)));
+  if (sort === 'price-asc') products = products.sort((a,b) => a.price - b.price); if (sort === 'price-desc') products = products.sort((a,b) => b.price - a.price); if (sort === 'name-asc') products = products.sort((a,b) => a.name.localeCompare(b.name)); return products;
 }
-
-module.exports = app;
+app.get('/health', (req,res) => res.json({ status:'healthy', service:'product', catalogSource:'local-canonical', products:catalog.length }));
+app.get('/products', (req,res) => { try { const products = filtered(req.query); res.json({ products, total:products.length, filters:req.query }); } catch (error) { invalid(res,error.message); } });
+app.get('/products/:id', (req,res) => { const product = catalog.find(item => item.id === req.params.id || item.slug === req.params.id); return product ? res.json(product) : res.status(404).json({ error:'Not found' }); });
+app.get('/categories', (req,res) => res.json({ categories:CATEGORIES.map(key => ({ key, label:labels[key], total:catalog.filter(p=>p.category===key).length })) }));
+if (require.main === module) { const server=app.listen(PORT,'0.0.0.0',()=>console.log(`Product service on port ${PORT}`)); const stop=()=>server.close(()=>process.exit(0)); process.on('SIGTERM',stop); process.on('SIGINT',stop); }
+module.exports=app; module.exports.catalog=catalog;

@@ -16,6 +16,7 @@ services:
       PORT: 3000
       BACKEND_URL: http://backend:4000
       SEARCH_URL: http://search:5000
+      PRODUCT_URL: http://product:4500
     depends_on:
       backend:
         condition: service_healthy

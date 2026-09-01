@@ -37,15 +37,37 @@ test('frontend renders the portfolio storefront with a nonce-based CSP', async (
 
 test('product filtering and lookup work', async () => {
   const filtered = await request(product)
-    .get('/products?category=electronics&maxPrice=500')
+    .get('/products?category=computers&maxPrice=16000')
     .expect(200);
-  assert.equal(filtered.body.total, 1);
-  assert.equal(filtered.body.products[0].name, 'Monitor 27"');
+  assert.equal(filtered.body.total, 2);
+  assert.ok(filtered.body.products.some(item => item.name === '27-inch 4K Monitor'));
 
   await request(product).get('/products/999').expect(404);
+  await request(product).get('/products?category=invalid').expect(400);
 });
 
-test('search validates the query and returns matches', async () => {
+test('canonical catalog has 20 unique products in nine categories', () => {
+  const catalog = product.catalog;
+  assert.equal(catalog.length, 20);
+  assert.equal(new Set(catalog.map(item => item.id)).size, 20);
+  assert.equal(new Set(catalog.map(item => item.slug)).size, 20);
+  assert.equal(new Set(catalog.map(item => item.category)).size, 9);
+  for (const item of catalog) {
+    assert.ok(item.name && item.price > 0 && item.stock >= 0 && item.image);
+  }
+});
+
+test('every catalog illustration is served locally', async () => {
+  for (const item of product.catalog) {
+    await request(frontend).get(item.image).expect(200).expect('Content-Type', /image\/svg\+xml/);
+  }
+});
+
+test('search validates the query and returns matches', async (t) => {
+  const server = product.listen(0, '127.0.0.1');
+  await new Promise(resolve => server.once('listening', resolve));
+  process.env.PRODUCT_URL = `http://127.0.0.1:${server.address().port}`;
+  t.after(() => { delete process.env.PRODUCT_URL; server.close(); });
   await request(search).get('/search').expect(400);
   const response = await request(search).get('/search?q=laptop').expect(200);
   assert.ok(response.body.results.some((item) => item.name === 'Laptop Pro'));
@@ -61,7 +83,7 @@ test('search uses the product service as its catalog when configured', async (t)
 
   process.env.PRODUCT_URL = `http://127.0.0.1:${server.address().port}`;
   const response = await request(search).get('/categories').expect(200);
-  assert.deepEqual(response.body.categories.sort(), ['accessories', 'electronics']);
+  assert.equal(response.body.categories.length, 9);
 });
 
 test('cart validates input and calculates totals', async () => {
@@ -83,9 +105,9 @@ test('manual Vodafone Cash orders are server-priced and token protected', async 
   await request(payment).post('/orders').send({ items: [] }).expect(400);
   const created = await request(payment).post('/orders').send({
     fullName: 'Test Customer', phone: '01000000000', shippingAddress: 'Cairo', city: 'Cairo',
-    items: [{ productId: 2, quantity: 1, price: 1 }, { productId: 2, quantity: 2, price: 1 }]
+    items: [{ productId: 6, quantity: 1, price: 1 }, { productId: 6, quantity: 2, price: 1 }]
   }).expect(201);
-  assert.equal(created.body.amountCents, 8997);
+  assert.equal(created.body.amountCents, 359700);
   assert.equal(created.body.items[0].quantity, 3);
   assert.ok(created.body.trackingToken.length > 30);
   assert.equal(payment._test.orders.get(created.body.orderId).trackingTokenHash, payment._test.hash(created.body.trackingToken));
