@@ -2,6 +2,10 @@
 
 A portfolio-ready e-commerce microservices demo with reproducible local development and automated deployment to AWS ECS Fargate. This repository is the maintained implementation that consolidates the original DEPI project plan and prototype into one working codebase.
 
+## Order email notifications
+
+Email delivery is disabled by default, and an unavailable SMTP server never prevents an order from being saved. To enable Gmail delivery, enable two-step verification on the sender Google account, generate a Gmail **App Password**, then put the sender in `SMTP_USER`, the App Password in `SMTP_PASS`, and a sender address in `EMAIL_FROM` in the ignored `.env`. Set `EMAIL_NOTIFICATIONS_ENABLED=true` and `ORDER_NOTIFICATION_EMAIL=mostafaanwar262004@gmail.com`, then recreate the payment container. Never commit or paste an App Password into chat.
+
 ## What is included
 
 - Seven Node.js services: frontend, API gateway, backend, product, cart, search, and demo payment.

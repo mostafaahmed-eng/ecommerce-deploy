@@ -9,6 +9,7 @@ const search = require('../services/search/src/index');
 const cart = require('../services/cart/src/index');
 const product = require('../services/product/src/index');
 const api = require('../services/api/src/index');
+const email = require('../services/payment/src/email');
 
 test('all services expose healthy endpoints', async () => {
   const checks = [
@@ -133,4 +134,18 @@ test('backend validates orders', async () => {
     .send({ products: [{ id: 1, quantity: 1 }] })
     .expect(200);
   assert.equal(response.body.status, 'confirmed');
+});
+
+test('order emails use configured recipient, escape HTML, and omit tracking tokens', async () => {
+  const order = { orderId: 'order-1', amountCents: 10000, currency: 'EGP', customer: { fullName: '<script>x</script>', phone: '0100', shippingAddress: 'Cairo', city: 'Cairo' }, items: [{ name: '<b>Item</b>', quantity: 1, unitPriceCents: 10000 }] };
+  const message = email.created(order, { PUBLIC_BASE_URL: 'http://example.test' });
+  assert.match(message.html, /&lt;script&gt;/);
+  assert.doesNotMatch(message.html, /trackingToken/i);
+  let calls = 0;
+  await email.send(order, 'order_created', { EMAIL_NOTIFICATIONS_ENABLED: 'false' }, () => ({ sendMail: () => { calls += 1; } }));
+  assert.equal(calls, 0);
+  const sent = [];
+  await email.send(order, 'order_created', { EMAIL_NOTIFICATIONS_ENABLED: 'true', ORDER_NOTIFICATION_EMAIL: 'recipient@example.test', SMTP_HOST: 'smtp.test', SMTP_USER: 'user', SMTP_PASS: 'pass', EMAIL_FROM: 'store@example.test' }, () => ({ sendMail: message => sent.push(message) }));
+  assert.equal(sent.length, 1);
+  assert.equal(sent[0].to, 'recipient@example.test');
 });
