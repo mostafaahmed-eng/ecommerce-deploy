@@ -43,9 +43,9 @@ test('storefront client includes persisted bilingual and cart-drawer controls', 
   const response = await request(frontend).get('/app.js').expect(200);
   assert.match(response.text, /store-language/);
   assert.match(response.text, /document\.documentElement\.dir/);
-  assert.match(response.text, /close\('cart'\);checkout\(\)/);
-  assert.match(response.text, /e\.key==='Escape'/);
-  assert.match(response.text, /backdrop.*close\('cart'\)/);
+  assert.match(response.text, /function closeCart/);
+  assert.match(response.text, /e\.key==='Escape'&&closeCart/);
+  assert.match(response.text, /backdrop.*onclick=closeCart/);
 });
 
 test('cart drawer opens, closes, reopens, accepts a product, and launches checkout through DOM clicks', async () => {
@@ -64,9 +64,13 @@ test('cart drawer opens, closes, reopens, accepts a product, and launches checko
   assert.ok(cart.classList.contains('open')); assert.ok(backdrop.classList.contains('open'));
   cart.querySelector('[data-close="cart"]').click(); assert.ok(!cart.classList.contains('open'));
   window.document.getElementById('cartOpen').click(); window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape' })); assert.ok(!cart.classList.contains('open')); assert.ok(!backdrop.classList.contains('open'));
-  window.document.querySelector('.add').click(); window.document.getElementById('cartOpen').click();
+  window.document.querySelector('[data-add]').click(); window.document.getElementById('cartOpen').click();
   assert.match(window.document.getElementById('cartItems').textContent, /Laptop Pro/);
   window.document.getElementById('checkoutOpen').click(); assert.ok(window.document.getElementById('checkout').classList.contains('open')); assert.ok(!cart.classList.contains('open'));
+  assert.match(window.document.getElementById('checkoutContent').textContent, /مراجعة الطلب/);
+  window.document.querySelector('[data-next]').click(); assert.match(window.document.getElementById('checkoutContent').textContent, /بيانات الشحن/);
+  window.document.getElementById('language').click(); assert.equal(window.document.documentElement.lang, 'en');
+  assert.match(window.document.getElementById('checkoutContent').textContent, /Shipping/);
 });
 
 test('product filtering and lookup work', async () => {
