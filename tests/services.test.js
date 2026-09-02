@@ -10,6 +10,8 @@ const cart = require('../services/cart/src/index');
 const product = require('../services/product/src/index');
 const api = require('../services/api/src/index');
 const email = require('../services/payment/src/email');
+const { JSDOM } = require('jsdom');
+const fs = require('fs');
 
 test('all services expose healthy endpoints', async () => {
   const checks = [
@@ -46,6 +48,27 @@ test('storefront client includes persisted bilingual and cart-drawer controls', 
   assert.match(response.text, /backdrop.*close\('cart'\)/);
 });
 
+test('cart drawer opens, closes, reopens, accepts a product, and launches checkout through DOM clicks', async () => {
+  const html = fs.readFileSync(require.resolve('../services/frontend/public/index.html'), 'utf8');
+  const script = fs.readFileSync(require.resolve('../services/frontend/public/app.js'), 'utf8');
+  const dom = new JSDOM(html, { runScripts: 'dangerously', url: 'http://localhost/' });
+  const { window } = dom;
+  window.fetch = async () => ({ json: async () => ({ products: [{ id: '1', name: 'Laptop Pro', description: 'Laptop', category: 'computers', price: 100, stock: 2, image: '/assets/products/laptop-pro.png' }] }) });
+  window.alert = () => {};
+  window.eval(script);
+  window.document.dispatchEvent(new window.Event('DOMContentLoaded'));
+  await new Promise(resolve => setTimeout(resolve, 20));
+  const cart = window.document.getElementById('cart');
+  const backdrop = window.document.getElementById('backdrop');
+  window.document.getElementById('cartOpen').click();
+  assert.ok(cart.classList.contains('open')); assert.ok(backdrop.classList.contains('open'));
+  cart.querySelector('[data-close="cart"]').click(); assert.ok(!cart.classList.contains('open'));
+  window.document.getElementById('cartOpen').click(); window.document.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Escape' })); assert.ok(!cart.classList.contains('open')); assert.ok(!backdrop.classList.contains('open'));
+  window.document.querySelector('.add').click(); window.document.getElementById('cartOpen').click();
+  assert.match(window.document.getElementById('cartItems').textContent, /Laptop Pro/);
+  window.document.getElementById('checkoutOpen').click(); assert.ok(window.document.getElementById('checkout').classList.contains('open')); assert.ok(!cart.classList.contains('open'));
+});
+
 test('product filtering and lookup work', async () => {
   const filtered = await request(product)
     .get('/products?category=computers&maxPrice=16000')
@@ -68,9 +91,9 @@ test('canonical catalog has 20 unique products in nine categories', () => {
   }
 });
 
-test('every catalog illustration is served locally', async () => {
+test('every catalog product image is served locally', async () => {
   for (const item of product.catalog) {
-    await request(frontend).get(item.image).expect(200).expect('Content-Type', /image\/svg\+xml/);
+    await request(frontend).get(item.image).expect(200).expect('Content-Type', /image\/(png|webp|jpeg)/);
   }
 });
 

@@ -23,6 +23,7 @@
     "node": ">=20"
   },
   "devDependencies": {
+    "jsdom": "^26.1.0",
     "supertest": "^7.1.4"
   }
 }
