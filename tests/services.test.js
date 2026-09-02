@@ -44,8 +44,10 @@ test('storefront client includes persisted bilingual and cart-drawer controls', 
   assert.match(response.text, /store-language/);
   assert.match(response.text, /document\.documentElement\.dir/);
   assert.match(response.text, /function closeCart/);
-  assert.match(response.text, /e\.key==='Escape'&&closeCart/);
+  assert.match(response.text, /event\.key==='Escape'/);
   assert.match(response.text, /backdrop.*onclick=closeCart/);
+  assert.match(response.text, /const i18n/);
+  assert.match(response.text, /state\.filters\.category/);
 });
 
 test('cart drawer opens, closes, reopens, accepts a product, and launches checkout through DOM clicks', async () => {
@@ -68,9 +70,11 @@ test('cart drawer opens, closes, reopens, accepts a product, and launches checko
   assert.match(window.document.getElementById('cartItems').textContent, /Laptop Pro/);
   window.document.getElementById('checkoutOpen').click(); assert.ok(window.document.getElementById('checkout').classList.contains('open')); assert.ok(!cart.classList.contains('open'));
   assert.match(window.document.getElementById('checkoutContent').textContent, /مراجعة الطلب/);
-  window.document.querySelector('[data-next]').click(); assert.match(window.document.getElementById('checkoutContent').textContent, /بيانات الشحن/);
+  window.document.querySelector('[data-next]').click(); assert.match(window.document.getElementById('checkoutContent').textContent, /بيانات التوصيل/);
   window.document.getElementById('language').click(); assert.equal(window.document.documentElement.lang, 'en');
-  assert.match(window.document.getElementById('checkoutContent').textContent, /Shipping/);
+  assert.equal(window.document.documentElement.dir, 'ltr');
+  assert.match(window.document.getElementById('checkoutContent').textContent, /Delivery details/);
+  assert.doesNotMatch(window.document.getElementById('checkoutContent').textContent, /بيانات التوصيل/);
 });
 
 test('product filtering and lookup work', async () => {
@@ -92,6 +96,8 @@ test('canonical catalog has 20 unique products in nine categories', () => {
   assert.equal(new Set(catalog.map(item => item.category)).size, 9);
   for (const item of catalog) {
     assert.ok(item.name && item.price > 0 && item.stock >= 0 && item.image);
+    assert.ok(item.nameAr && item.nameEn && item.descriptionAr && item.descriptionEn);
+    assert.ok(item.categoryAr && item.categoryEn);
   }
 });
 
