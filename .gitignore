@@ -1,5 +1,7 @@
 node_modules/
 .env
+.env.*
+!.env.example
 *.log
 coverage/
 dist/
@@ -10,5 +12,9 @@ build/
 *.tfstate
 *.tfstate.*
 *.tfplan
+*.tfvars
+!*.tfvars.example
+*.pem
+*.key
 crash.log
 uploads/

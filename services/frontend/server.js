@@ -11,6 +11,7 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:4000';
+const API_URL = process.env.API_URL || 'http://localhost:4600';
 
 app.use((req, res, next) => {
   res.locals.cspNonce = crypto.randomBytes(16).toString('base64');
@@ -59,6 +60,29 @@ app.get('/api/search', async (req, res) => {
     res.status(500).json({ error: 'Search service unavailable' });
   }
 });
+
+// In ECS the ALB reaches this frontend container directly. Keep customer
+// payment, receipt, cart, and admin requests on the same-origin public path
+// by streaming them to the internal API gateway (including multipart uploads).
+function proxyApi(req, res) {
+  const upstreamUrl = new URL(API_URL);
+  const transport = upstreamUrl.protocol === 'https:' ? require('https') : require('http');
+  const upstream = transport.request({
+    hostname: upstreamUrl.hostname,
+    port: upstreamUrl.port,
+    method: req.method,
+    path: req.originalUrl,
+    headers: { ...req.headers, host: upstreamUrl.host, 'x-forwarded-for': req.ip }
+  }, response => {
+    res.status(response.statusCode);
+    for (const [name, value] of Object.entries(response.headers)) if (value !== undefined) res.setHeader(name, value);
+    response.pipe(res);
+  });
+  upstream.on('error', () => !res.headersSent && res.status(502).json({ error: 'API gateway unavailable' }));
+  req.pipe(upstream);
+}
+
+app.use(['/api/payments', '/api/admin', '/api/cart'], proxyApi);
 
 app.get('/admin', (req, res) => {
   res.send(`<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Northstar Admin</title><style nonce="${res.locals.cspNonce}">body{margin:0;background:#080d18;color:#eef2ff;font:16px system-ui;max-width:1100px;padding:24px;margin:auto}input,select,button{padding:10px;margin:4px;border-radius:7px;border:1px solid #334155}button{background:#5eead4;color:#082f49;font-weight:700}table{width:100%;border-collapse:collapse;margin-top:18px}td,th{padding:10px;border-bottom:1px solid #334155;text-align:left}.panel{background:#121a2a;padding:16px;border-radius:12px;margin:15px 0}.hidden{display:none}.stats{display:flex;flex-wrap:wrap;gap:10px}.stats span{background:#1e293b;padding:12px;border-radius:8px}</style></head><body><h1>Order review</h1><section id="login" class="panel"><h2>Secure sign in</h2><input id="username" placeholder="Username" autocomplete="username"><input id="password" type="password" placeholder="Password" autocomplete="current-password"><button id="signIn">Sign in</button><p id="loginMessage"></p></section><main id="dashboard" class="hidden"><button id="logout">Sign out</button><section class="panel"><input id="query" placeholder="Order ID or phone"><select id="statusFilter"><option value="">All statuses</option><option>awaiting_payment</option><option>receipt_submitted</option><option>paid</option><option>payment_rejected</option><option>cancelled</option></select><button id="reload">Refresh</button><div class="stats" id="stats"></div></section><section class="panel"><p id="message"></p><table><thead><tr><th>Order</th><th>Customer</th><th>Amount</th><th>Status</th><th>Action</th></tr></thead><tbody id="orders"></tbody></table></section><section id="detail" class="panel hidden"></section></main><script nonce="${res.locals.cspNonce}">let csrf='';const api=(p,o={})=>fetch('/api/admin'+p,{credentials:'same-origin',headers:{'content-type':'application/json','x-csrf-token':csrf,...(o.headers||{})},...o});async function load(){let r=await api('/orders?q='+encodeURIComponent(query.value)+'&status='+encodeURIComponent(statusFilter.value)),d=await r.json();if(!r.ok){message.textContent=d.error;return}stats.innerHTML=Object.entries(d.counts).map(([k,v])=>'<span>'+k+': '+v+'</span>').join('');orders.innerHTML=d.orders.map(o=>'<tr><td>'+o.orderId+'</td><td>'+o.customer.fullName+'</td><td>EGP '+(o.amountCents/100).toFixed(2)+'</td><td>'+o.status+'</td><td><button data-id="'+o.orderId+'">Review</button></td></tr>').join('')||'<tr><td colspan="5">No orders found</td></tr>';document.querySelectorAll('[data-id]').forEach(b=>b.onclick=()=>details(b.dataset.id))}async function details(id){let r=await api('/orders/'+id),o=await r.json();detail.classList.remove('hidden');detail.innerHTML='<h2>'+o.orderId+'</h2><p>'+o.customer.fullName+' · '+o.customer.phone+'</p><p>'+o.items.map(i=>i.name+' × '+i.quantity+' — EGP '+(i.unitPriceCents*i.quantity/100).toFixed(2)).join('<br>')+'</p><p>Status: '+o.status+'</p><button id="approve">Approve</button><button id="reject">Reject</button><button id="cancel">Cancel</button><pre>'+JSON.stringify(o.auditLog,null,2)+'</pre>';approve.onclick=()=>change(id,'approve');reject.onclick=()=>change(id,'reject');cancel.onclick=()=>change(id,'cancel')}async function change(id,action){let reason='';if(action!=='approve'){reason=prompt('Reason required:')||'';if(!reason)return}if(!confirm('Confirm status change?'))return;let r=await api('/orders/'+id+'/'+action,{method:'POST',body:JSON.stringify({reason})}),d=await r.json();message.textContent=r.ok?'Order updated':d.error;load()}signIn.onclick=async()=>{let r=await api('/login',{method:'POST',body:JSON.stringify({username:username.value,password:password.value})}),d=await r.json();if(!r.ok){loginMessage.textContent=d.error;return}csrf=d.csrfToken;login.classList.add('hidden');dashboard.classList.remove('hidden');load()};logout.onclick=async()=>{await api('/logout',{method:'POST'});location.reload()};reload.onclick=load;</script></body></html>`);

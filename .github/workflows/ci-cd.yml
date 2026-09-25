@@ -55,18 +55,16 @@ jobs:
         run: terraform fmt -check -recursive infrastructure/terraform
 
       - name: Initialize Terraform without remote state
-        if: github.event_name == 'pull_request'
         working-directory: infrastructure/terraform
         run: terraform init -backend=false
 
       - name: Validate Terraform
-        if: github.event_name == 'pull_request'
         working-directory: infrastructure/terraform
         run: terraform validate
 
   provision-registry:
     name: Provision ECR repositories
-    if: github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: validate
     runs-on: ubuntu-latest
     permissions:
@@ -84,6 +82,12 @@ jobs:
         with:
           terraform_version: 1.9.8
 
+      - name: Require production configuration references
+        run: |
+          test -n "${{ vars.PUBLIC_DOMAIN_NAME }}"
+          test -n "${{ vars.ROUTE53_ZONE_ID }}"
+          test -n "${{ secrets.PAYMENT_SECRETS_ARN }}"
+
       - name: Initialize Terraform
         working-directory: infrastructure/terraform
         run: >-
@@ -99,12 +103,15 @@ jobs:
           terraform apply -auto-approve
           -var="aws_region=${{ env.AWS_REGION }}"
           -var="image_tag=${{ github.sha }}"
+          -var="domain_name=${{ vars.PUBLIC_DOMAIN_NAME }}"
+          -var="route53_zone_id=${{ vars.ROUTE53_ZONE_ID }}"
+          -var="payment_secrets_arn=${{ secrets.PAYMENT_SECRETS_ARN }}"
           -target='aws_ecr_repository.service'
           -target='aws_ecr_lifecycle_policy.service'
 
   build:
     name: Build ${{ matrix.service }}
-    if: github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: provision-registry
     runs-on: ubuntu-latest
     strategy:
@@ -142,7 +149,7 @@ jobs:
 
   deploy:
     name: Deploy to ECS
-    if: github.event_name != 'pull_request'
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
     needs: build
     runs-on: ubuntu-latest
     environment:
@@ -164,6 +171,12 @@ jobs:
         with:
           terraform_version: 1.9.8
 
+      - name: Require production configuration references
+        run: |
+          test -n "${{ vars.PUBLIC_DOMAIN_NAME }}"
+          test -n "${{ vars.ROUTE53_ZONE_ID }}"
+          test -n "${{ secrets.PAYMENT_SECRETS_ARN }}"
+
       - name: Initialize Terraform
         working-directory: infrastructure/terraform
         run: >-
@@ -179,6 +192,9 @@ jobs:
           terraform plan -out=tfplan
           -var="aws_region=${{ env.AWS_REGION }}"
           -var="image_tag=${{ github.sha }}"
+          -var="domain_name=${{ vars.PUBLIC_DOMAIN_NAME }}"
+          -var="route53_zone_id=${{ vars.ROUTE53_ZONE_ID }}"
+          -var="payment_secrets_arn=${{ secrets.PAYMENT_SECRETS_ARN }}"
 
       - name: Apply deployment
         working-directory: infrastructure/terraform

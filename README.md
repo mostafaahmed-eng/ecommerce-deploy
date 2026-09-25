@@ -69,6 +69,15 @@ For AWS receipts, configure a private encrypted S3 bucket with Block Public Acce
 
 ## First AWS deployment
 
+> [!IMPORTANT]
+> Production deployment requires a public DNS name hosted in Route 53 and an
+> existing Secrets Manager JSON secret for the payment service. The workflow
+> deliberately fails before provisioning if these references are absent.
+> The secret must contain the names listed in `.env.example` that are used by
+> payment/admin/email configuration; never place the values in Terraform,
+> `tfvars`, GitHub variables, or source control. Receipt images are stored in
+> the private, encrypted S3 receipt bucket created by Terraform.
+
 Use an AWS account where you are allowed to create IAM, S3, VPC, ECR, ECS, CloudWatch, and load-balancer resources. The one-time bootstrap must be run by an authenticated AWS administrator from a trusted computer.
 
 ### 1. Authenticate locally
@@ -116,8 +125,13 @@ In the repository settings, add these Actions secrets:
 | --- | --- |
 | `AWS_ROLE_ARN` | `github_actions_role_arn` from bootstrap output |
 | `TF_STATE_BUCKET` | `state_bucket_name` from bootstrap output |
+| `PAYMENT_SECRETS_ARN` | ARN of the pre-created Secrets Manager JSON secret for payment/admin/email settings |
 
 Optionally add the Actions variable `AWS_REGION`; it defaults to `us-east-1`.
+Add the required Actions variables `PUBLIC_DOMAIN_NAME` (for example
+`store.example.com`) and `ROUTE53_ZONE_ID` (the public hosted zone that owns
+that name). Terraform requests and validates an ACM certificate, redirects
+HTTP to HTTPS, and creates the DNS alias to the ALB.
 
 Create a protected GitHub environment named `production` if deployment approval is required. Protect `main` and require the CI checks before merging.
 

@@ -6,6 +6,7 @@ const fs = require('fs/promises');
 const path = require('path');
 const http = require('http');
 const https = require('https');
+const { Readable } = require('stream');
 const email = require('./email');
 require('dotenv').config();
 
@@ -13,6 +14,9 @@ const MAX_FILE_SIZE = 5 * 1024 * 1024;
 const STATUS = Object.freeze({ AWAITING: 'awaiting_payment', SUBMITTED: 'receipt_submitted', REJECTED: 'payment_rejected', PAID: 'paid', CANCELLED: 'cancelled' });
 const NEXT = { [STATUS.AWAITING]: [STATUS.SUBMITTED, STATUS.CANCELLED], [STATUS.SUBMITTED]: [STATUS.PAID, STATUS.REJECTED, STATUS.CANCELLED], [STATUS.REJECTED]: [STATUS.SUBMITTED, STATUS.CANCELLED], [STATUS.PAID]: [], [STATUS.CANCELLED]: [] };
 const orders = new Map(), notifications = new Map(), sessions = new Map(), rates = new Map();
+const receiptDriver = process.env.RECEIPTS_STORAGE_DRIVER || 'local';
+const receiptBucket = process.env.RECEIPTS_BUCKET || '';
+let awsCredentials;
 const stamp = () => new Date().toISOString();
 const hash = value => crypto.createHash('sha256').update(value).digest('hex');
 const equal = (a, b) => typeof a === 'string' && typeof b === 'string' && a.length === b.length && crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
@@ -29,19 +33,69 @@ function addAudit(order, actor, before, after, reason) { order.auditLog.push({ a
 function imageType(data) { if (data.length >= 3 && data.subarray(0, 3).equals(Buffer.from([255, 216, 255]))) return ['image/jpeg', 'jpg']; if (data.length >= 8 && data.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return ['image/png', 'png']; if (data.length >= 12 && data.subarray(0, 4).toString() === 'RIFF' && data.subarray(8, 12).toString() === 'WEBP') return ['image/webp', 'webp']; return null; }
 function requestJson(url) { const transport = url.startsWith('https:') ? https : http; return new Promise((resolve, reject) => { const request = transport.get(url, { timeout: 4000 }, response => { let result = ''; response.on('data', chunk => result += chunk); response.on('end', () => response.statusCode === 200 ? resolve(JSON.parse(result)) : reject(new Error('Product unavailable'))); }); request.on('error', reject); request.on('timeout', () => request.destroy()); }); }
 async function snapshot(items) { if (!Array.isArray(items) || !items.length) throw Object.assign(new Error('At least one item is required'), { status: 400 }); const merged = new Map(); for (const item of items) { const productId = String(item.productId || item.id || ''); const quantity = Number(item.quantity); if (!productId || !Number.isInteger(quantity) || quantity < 1 || quantity > 20) throw Object.assign(new Error('Invalid cart item'), { status: 400 }); merged.set(productId, (merged.get(productId) || 0) + quantity); } const result = []; for (const [productId, quantity] of merged) { if (quantity > 20) throw Object.assign(new Error('Quantity limit exceeded'), { status: 400 }); let product; try { product = await requestJson(`${process.env.PRODUCT_URL || 'http://localhost:4500'}/products/${encodeURIComponent(productId)}`); } catch { throw Object.assign(new Error('A requested product is unavailable'), { status: 400 }); } if (Number(product.stock) < quantity) throw Object.assign(new Error('A requested product is unavailable'), { status: 400 }); result.push({ productId: String(product.id), name: product.name, quantity, unitPriceCents: Math.round(Number(product.price) * 100) }); } return result; }
-async function saveReceipt(data, extension) { const root = path.resolve(process.env.RECEIPTS_LOCAL_PATH || '/app/uploads'); await fs.mkdir(root, { recursive: true }); const key = `${crypto.randomBytes(20).toString('hex')}.${extension}`; await fs.writeFile(path.join(root, key), data, { mode: 0o600 }); return key; }
+async function saveReceipt(data, extension, contentType) {
+  const key = `${crypto.randomBytes(20).toString('hex')}.${extension}`;
+  if (receiptDriver === 's3') {
+    await s3Request(key, 'PUT', data, contentType);
+    return key;
+  }
+  const root = path.resolve(process.env.RECEIPTS_LOCAL_PATH || '/app/uploads');
+  await fs.mkdir(root, { recursive: true });
+  await fs.writeFile(path.join(root, key), data, { mode: 0o600 });
+  return key;
+}
+async function deleteReceipt(key) {
+  if (!key) return;
+  if (receiptDriver === 's3') {
+    await s3Request(key, 'DELETE');
+    return;
+  }
+  await fs.unlink(path.join(path.resolve(process.env.RECEIPTS_LOCAL_PATH || '/app/uploads'), key)).catch(() => {});
+}
+function hmac(key, value, encoding) { return crypto.createHmac('sha256', key).update(value, 'utf8').digest(encoding); }
+async function taskCredentials() {
+  if (awsCredentials && Date.parse(awsCredentials.Expiration) - Date.now() > 60000) return awsCredentials;
+  const relativeUri = process.env.AWS_CONTAINER_CREDENTIALS_RELATIVE_URI;
+  if (!relativeUri) throw new Error('ECS task credentials are unavailable');
+  const response = await fetch(`http://169.254.170.2${relativeUri}`);
+  if (!response.ok) throw new Error('Unable to read ECS task credentials');
+  awsCredentials = await response.json();
+  return awsCredentials;
+}
+async function s3Request(key, method, body, contentType) {
+  if (!receiptBucket) throw new Error('S3 receipt storage is not configured');
+  const credentials = await taskCredentials(), region = process.env.AWS_REGION || 'us-east-1';
+  const service = 's3', host = `${receiptBucket}.s3.${region}.amazonaws.com`, date = new Date();
+  const amzDate = date.toISOString().replace(/[:-]|\.\d{3}/g, ''), dateStamp = amzDate.slice(0, 8);
+  const payload = body || Buffer.alloc(0), payloadHash = crypto.createHash('sha256').update(payload).digest('hex');
+  const canonicalUri = `/${encodeURIComponent(key).replace(/%2F/g, '/')}`;
+  const headers = { host, 'x-amz-content-sha256': payloadHash, 'x-amz-date': amzDate, 'x-amz-security-token': credentials.Token };
+  if (contentType) headers['content-type'] = contentType;
+  if (method === 'PUT') headers['x-amz-server-side-encryption'] = 'AES256';
+  const signedHeaders = Object.keys(headers).sort().join(';');
+  const canonicalHeaders = Object.keys(headers).sort().map(name => `${name}:${headers[name]}\n`).join('');
+  const canonicalRequest = [method, canonicalUri, '', canonicalHeaders, signedHeaders, payloadHash].join('\n');
+  const scope = `${dateStamp}/${region}/${service}/aws4_request`;
+  const stringToSign = `AWS4-HMAC-SHA256\n${amzDate}\n${scope}\n${crypto.createHash('sha256').update(canonicalRequest).digest('hex')}`;
+  const signingKey = hmac(hmac(hmac(hmac(`AWS4${credentials.SecretAccessKey}`, dateStamp), region), service), 'aws4_request');
+  headers.authorization = `AWS4-HMAC-SHA256 Credential=${credentials.AccessKeyId}/${scope}, SignedHeaders=${signedHeaders}, Signature=${hmac(signingKey, stringToSign, 'hex')}`;
+  const response = await fetch(`https://${host}${canonicalUri}`, { method, headers, body: body || undefined });
+  if (!response.ok) throw new Error(`Receipt storage request failed (${response.status})`);
+  return response;
+}
 function readMultipart(req) { return new Promise((resolve, reject) => { const chunks = []; let length = 0; req.on('data', chunk => { length += chunk.length; if (length > MAX_FILE_SIZE + 128 * 1024) { req.destroy(); reject(Object.assign(new Error('File too large'), { status: 413 })); } else chunks.push(chunk); }); req.on('end', () => { try { const boundary = /boundary=([^;]+)/i.exec(req.get('content-type') || '')?.[1]; if (!boundary) throw new Error('Invalid multipart request'); const fields = {}, parts = Buffer.concat(chunks).toString('binary').split(`--${boundary}`).slice(1, -1); let file; for (const part of parts) { const divider = part.indexOf('\r\n\r\n'); if (divider < 0) continue; const headers = part.slice(0, divider), value = part.slice(divider + 4, -2), name = /name="([^"]+)"/.exec(headers)?.[1]; if (/filename="[^"]*"/.test(headers)) file = Buffer.from(value, 'binary'); else if (name) fields[name] = value; } if (!file) throw new Error('Receipt image is required'); resolve({ fields, file }); } catch (error) { reject(Object.assign(error, { status: error.status || 400 })); } }); req.on('error', reject); }); }
 function notify(order, event) { const notification = { notificationId: crypto.randomUUID(), orderId: order.orderId, status: order.status, event, customerName: order.customer.fullName, amountCents: order.amountCents, createdAt: stamp(), readAt: null }; notifications.set(notification.notificationId, notification); if (event === 'order_created' || event === 'receipt_uploaded') email.send(order, event === 'receipt_uploaded' ? 'receipt_submitted' : 'order_created').then(result => { order.emailNotification = result.status; }).catch(() => { order.emailNotification = 'failed'; console.warn('Order email notification failed'); }); const bot = process.env.TELEGRAM_BOT_TOKEN, chat = process.env.TELEGRAM_ADMIN_CHAT_ID; if (!bot || !chat) return; const message = `Order ${order.orderId}\n${order.customer.fullName}\n${(order.amountCents / 100).toFixed(2)} ${order.currency}\n${order.status}\n${process.env.PUBLIC_BASE_URL || 'http://localhost:8088'}/admin`; fetch(`https://api.telegram.org/bot${bot}/sendMessage`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ chat_id: chat, text: message }) }).catch(() => console.warn('Telegram notification failed')); }
 function verifyPassword(password, encoded) { try { const [kind, salt, expected] = encoded.split('$'); return kind === 'scrypt' && equal(crypto.scryptSync(password, Buffer.from(salt, 'base64url'), 64).toString('base64url'), expected); } catch { return false; } }
 
 const app = express(), PORT = process.env.PORT || 4200;
-app.set('trust proxy', 1); app.use(helmet()); app.use(cors({ origin: process.env.PUBLIC_BASE_URL || true, credentials: true })); app.use(express.json({ limit: '64kb' }));
+const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || '';
+app.set('trust proxy', 1); app.use(helmet()); app.use(cors({ credentials: true, origin(origin, done) { if (!origin || (PUBLIC_BASE_URL && origin === PUBLIC_BASE_URL)) return done(null, true); return done(new Error('Origin is not allowed')); } })); app.use(express.json({ limit: '64kb' }));
 app.get('/health', (req, res) => res.json({ status: 'healthy', service: 'payment' }));
 app.get('/config', (req, res) => res.json({ vodafoneCashNumber: process.env.VODAFONE_CASH_NUMBER || '' }));
 app.post('/orders', rateLimit('orders', 10), async (req, res) => { try { const { fullName, phone, email, shippingAddress, city, items } = req.body; if (![fullName, phone, shippingAddress, city].every(value => typeof value === 'string' && value.trim())) return res.status(400).json({ error: 'Customer details are incomplete' }); const itemsSnapshot = await snapshot(items), amountCents = itemsSnapshot.reduce((total, item) => total + item.unitPriceCents * item.quantity, 0), token = newToken(); const order = { orderId: crypto.randomUUID(), status: STATUS.AWAITING, amountCents, currency: 'EGP', items: itemsSnapshot, customer: { fullName: fullName.trim(), phone: phone.trim(), email: typeof email === 'string' ? email.trim() : '', shippingAddress: shippingAddress.trim(), city: city.trim() }, trackingTokenHash: hash(token), auditLog: [], createdAt: stamp(), updatedAt: stamp() }; orders.set(order.orderId, order); notify(order, 'order_created'); res.status(201).json({ ...clientOrder(order), trackingToken: token, vodafoneCashNumber: process.env.VODAFONE_CASH_NUMBER || '' }); } catch (error) { res.status(error.status || 500).json({ error: error.status ? error.message : 'Unable to create order' }); } });
 function customer(req, res, next) { const order = orders.get(req.params.orderId), token = req.get('x-tracking-token') || req.body?.trackingToken; if (!order || !token || !equal(order.trackingTokenHash, hash(token))) return res.status(404).json({ error: 'Order not found' }); req.order = order; next(); }
 app.post('/orders/:orderId/status', rateLimit('tracking', 20), customer, (req, res) => res.json(clientOrder(req.order)));
-app.post('/orders/:orderId/receipt', rateLimit('receipt', 8), async (req, res) => { try { const { fields, file } = await readMultipart(req); req.body = fields; customer(req, res, async () => { const order = req.order; if (![STATUS.AWAITING, STATUS.REJECTED].includes(order.status)) return res.status(409).json({ error: 'A receipt cannot be uploaded for this order status' }); if (file.length > MAX_FILE_SIZE) return res.status(413).json({ error: 'File too large' }); const type = imageType(file); if (!type) return res.status(400).json({ error: 'Only JPG, PNG, and WEBP image files are accepted' }); if (!fields.transferPhone?.trim()) return res.status(400).json({ error: 'Transfer phone number is required' }); if (order.receiptKey) await fs.unlink(path.join(path.resolve(process.env.RECEIPTS_LOCAL_PATH || '/app/uploads'), order.receiptKey)).catch(() => {}); const previous = order.status; order.receiptKey = await saveReceipt(file, type[1]); order.transferPhone = fields.transferPhone.trim(); order.transactionReference = (fields.transactionReference || '').trim(); order.approximateTransferTime = (fields.approximateTransferTime || '').trim(); order.receiptSubmittedAt = order.updatedAt = stamp(); order.rejectionReason = undefined; order.status = STATUS.SUBMITTED; addAudit(order, 'customer', previous, STATUS.SUBMITTED, 'Receipt submitted'); notify(order, previous === STATUS.REJECTED ? 'receipt_resubmitted' : 'receipt_uploaded'); res.json(clientOrder(order)); }); } catch (error) { res.status(error.status || 400).json({ error: error.message || 'Receipt upload failed' }); } });
+app.post('/orders/:orderId/receipt', rateLimit('receipt', 8), async (req, res) => { try { const { fields, file } = await readMultipart(req); req.body = fields; customer(req, res, async () => { const order = req.order; if (![STATUS.AWAITING, STATUS.REJECTED].includes(order.status)) return res.status(409).json({ error: 'A receipt cannot be uploaded for this order status' }); if (file.length > MAX_FILE_SIZE) return res.status(413).json({ error: 'File too large' }); const type = imageType(file); if (!type) return res.status(400).json({ error: 'Only JPG, PNG, and WEBP image files are accepted' }); if (!fields.transferPhone?.trim()) return res.status(400).json({ error: 'Transfer phone number is required' }); if (order.receiptKey) await deleteReceipt(order.receiptKey); const previous = order.status; order.receiptKey = await saveReceipt(file, type[1], type[0]); order.receiptContentType = type[0]; order.transferPhone = fields.transferPhone.trim(); order.transactionReference = (fields.transactionReference || '').trim(); order.approximateTransferTime = (fields.approximateTransferTime || '').trim(); order.receiptSubmittedAt = order.updatedAt = stamp(); order.rejectionReason = undefined; order.status = STATUS.SUBMITTED; addAudit(order, 'customer', previous, STATUS.SUBMITTED, 'Receipt submitted'); notify(order, previous === STATUS.REJECTED ? 'receipt_resubmitted' : 'receipt_uploaded'); res.json(clientOrder(order)); }); } catch (error) { res.status(error.status || 400).json({ error: error.message || 'Receipt upload failed' }); } });
 app.post('/admin/login', rateLimit('login', 5, 15 * 60000), (req, res) => { const { username, password } = req.body, user = process.env.ADMIN_USERNAME, passwordHash = process.env.ADMIN_PASSWORD_HASH; if (!user || !passwordHash || !equal(String(username || ''), user) || !verifyPassword(String(password || ''), passwordHash)) return res.status(401).json({ error: 'Invalid username or password' }); const sessionId = crypto.randomBytes(32).toString('base64url'), csrfToken = crypto.randomBytes(32).toString('base64url'); sessions.set(sessionId, { username: user, csrfToken, expiresAt: Date.now() + 8 * 60 * 60000 }); res.cookie('admin_session', sessionId, { httpOnly: true, sameSite: 'strict', secure: process.env.NODE_ENV === 'production', maxAge: 8 * 60 * 60000, path: '/api/admin' }); res.json({ authenticated: true, csrfToken }); });
 app.post('/admin/logout', admin, csrf, (req, res) => { sessions.delete(cookies(req).admin_session); res.clearCookie('admin_session', { path: '/api/admin' }); res.status(204).end(); });
 app.get('/admin/session', admin, (req, res) => res.json({ authenticated: true, username: req.admin.username, csrfToken: req.admin.csrfToken }));
@@ -49,7 +103,7 @@ app.get('/admin/orders', admin, (req, res) => { const { status, q, from, to } = 
 app.get('/admin/orders/:orderId', admin, (req, res) => { const order = orders.get(req.params.orderId); return order ? res.json(ownerOrder(order)) : res.status(404).json({ error: 'Order not found' }); });
 function change(next, needsReason) { return (req, res) => { const order = orders.get(req.params.orderId), reason = String(req.body.reason || '').trim(); if (!order) return res.status(404).json({ error: 'Order not found' }); if (needsReason && !reason) return res.status(400).json({ error: 'A reason is required' }); if (!NEXT[order.status].includes(next)) return res.status(409).json({ error: 'Invalid order status transition' }); const previous = order.status; order.status = next; order.updatedAt = stamp(); if (next === STATUS.PAID) order.paidAt = stamp(); if (next === STATUS.CANCELLED) order.cancelledAt = stamp(); if (next === STATUS.REJECTED) order.rejectionReason = reason; addAudit(order, req.admin.username, previous, next, reason); res.json(ownerOrder(order)); }; }
 app.post('/admin/orders/:orderId/approve', admin, csrf, change(STATUS.PAID)); app.post('/admin/orders/:orderId/reject', admin, csrf, change(STATUS.REJECTED, true)); app.post('/admin/orders/:orderId/cancel', admin, csrf, change(STATUS.CANCELLED, true));
-app.get('/admin/orders/:orderId/receipt', admin, (req, res) => { const order = orders.get(req.params.orderId); if (!order?.receiptKey) return res.status(404).json({ error: 'Receipt not found' }); res.set({ 'Cache-Control': 'private, no-store', 'Content-Disposition': 'inline', 'X-Content-Type-Options': 'nosniff' }); res.sendFile(path.join(path.resolve(process.env.RECEIPTS_LOCAL_PATH || '/app/uploads'), order.receiptKey), error => error && !res.headersSent && res.status(404).end()); });
+app.get('/admin/orders/:orderId/receipt', admin, async (req, res) => { const order = orders.get(req.params.orderId); if (!order?.receiptKey) return res.status(404).json({ error: 'Receipt not found' }); res.set({ 'Cache-Control': 'private, no-store', 'Content-Disposition': 'inline', 'Content-Type': order.receiptContentType || 'application/octet-stream', 'X-Content-Type-Options': 'nosniff' }); try { if (receiptDriver === 's3') { const object = await s3Request(order.receiptKey, 'GET'); return Readable.fromWeb(object.body).pipe(res); } return res.sendFile(path.join(path.resolve(process.env.RECEIPTS_LOCAL_PATH || '/app/uploads'), order.receiptKey), error => error && !res.headersSent && res.status(404).end()); } catch { return res.status(404).end(); } });
 app.get('/admin/notifications', admin, (req, res) => res.json({ notifications: [...notifications.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)) }));
 app.post('/admin/notifications/:notificationId/read', admin, csrf, (req, res) => { const note = notifications.get(req.params.notificationId); if (!note) return res.status(404).json({ error: 'Notification not found' }); note.readAt = stamp(); res.json(note); });
 if (require.main === module) { const server = app.listen(PORT, '0.0.0.0', () => console.log(`Payment service on port ${PORT}`)); const stop = () => server.close(() => process.exit(0)); process.on('SIGTERM', stop); process.on('SIGINT', stop); }

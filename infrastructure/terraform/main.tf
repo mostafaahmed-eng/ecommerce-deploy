@@ -21,11 +21,20 @@ locals {
     Environment = var.environment
     ManagedBy   = "Terraform"
   }
+  payment_secret_names = [
+    "VODAFONE_CASH_NUMBER", "ADMIN_USERNAME", "ADMIN_PASSWORD_HASH",
+    "ADMIN_SESSION_SECRET", "EMAIL_NOTIFICATIONS_ENABLED",
+    "ORDER_NOTIFICATION_EMAIL", "SMTP_HOST", "SMTP_PORT", "SMTP_SECURE",
+    "SMTP_USER", "SMTP_PASS", "EMAIL_FROM", "TELEGRAM_BOT_TOKEN",
+    "TELEGRAM_ADMIN_CHAT_ID"
+  ]
 }
 
 data "aws_availability_zones" "available" {
   state = "available"
 }
+
+data "aws_caller_identity" "current" {}
 
 resource "aws_vpc" "main" {
   cidr_block           = var.vpc_cidr
@@ -76,6 +85,14 @@ resource "aws_security_group" "alb" {
     cidr_blocks = var.allowed_http_cidrs
   }
 
+  ingress {
+    description = "HTTPS"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = var.allowed_http_cidrs
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
@@ -110,7 +127,7 @@ resource "aws_security_group" "ecs" {
 resource "aws_ecr_repository" "service" {
   for_each             = local.services
   name                 = "${var.project_name}/${each.key}"
-  image_tag_mutability = "MUTABLE"
+  image_tag_mutability = "IMMUTABLE"
   force_delete         = var.allow_repository_force_delete
 
   image_scanning_configuration { scan_on_push = true }
@@ -170,6 +187,46 @@ resource "aws_dynamodb_table" "products" {
   tags                        = local.common_tags
 }
 
+resource "aws_s3_bucket" "receipts" {
+  bucket        = "${local.name}-receipts-${data.aws_caller_identity.current.account_id}"
+  force_destroy = false
+  tags          = merge(local.common_tags, { Name = "${local.name}-receipts" })
+}
+
+resource "aws_s3_bucket_public_access_block" "receipts" {
+  bucket                  = aws_s3_bucket.receipts.id
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_ownership_controls" "receipts" {
+  bucket = aws_s3_bucket.receipts.id
+  rule { object_ownership = "BucketOwnerEnforced" }
+}
+
+resource "aws_s3_bucket_server_side_encryption_configuration" "receipts" {
+  bucket = aws_s3_bucket.receipts.id
+  rule {
+    apply_server_side_encryption_by_default { sse_algorithm = "AES256" }
+  }
+}
+
+resource "aws_s3_bucket_versioning" "receipts" {
+  bucket = aws_s3_bucket.receipts.id
+  versioning_configuration { status = "Enabled" }
+}
+
+resource "aws_s3_bucket_lifecycle_configuration" "receipts" {
+  bucket = aws_s3_bucket.receipts.id
+  rule {
+    id     = "expire-noncurrent-receipts"
+    status = "Enabled"
+    noncurrent_version_expiration { noncurrent_days = 30 }
+  }
+}
+
 resource "aws_dynamodb_table_item" "catalog_seed" {
   for_each   = local.catalog_seed
   table_name = aws_dynamodb_table.products.name
@@ -223,6 +280,12 @@ resource "aws_iam_role_policy" "ecs_task" {
         Resource = aws_dynamodb_table.products.arn
       },
       {
+        Sid      = "ManagePrivateReceipts"
+        Effect   = "Allow"
+        Action   = ["s3:GetObject", "s3:PutObject", "s3:DeleteObject"]
+        Resource = "${aws_s3_bucket.receipts.arn}/*"
+      },
+      {
         Sid    = "EcsExecuteCommand"
         Effect = "Allow"
         Action = [
@@ -238,6 +301,20 @@ resource "aws_iam_role_policy" "ecs_task" {
 resource "aws_iam_role_policy_attachment" "ecs_execution" {
   role       = aws_iam_role.ecs_execution.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+resource "aws_iam_role_policy" "ecs_execution_secrets" {
+  name = "ReadPaymentRuntimeSecrets"
+  role = aws_iam_role.ecs_execution.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Sid      = "ReadPaymentRuntimeSecrets"
+      Effect   = "Allow"
+      Action   = ["secretsmanager:GetSecretValue"]
+      Resource = var.payment_secrets_arn
+    }]
+  })
 }
 
 resource "aws_ecs_task_definition" "app" {
@@ -265,7 +342,9 @@ resource "aws_ecs_task_definition" "app" {
         [{ name = "NODE_ENV", value = "production" }, { name = "PORT", value = tostring(config.port) }],
         service_name == "frontend" ? [
           { name = "BACKEND_URL", value = "http://127.0.0.1:4000" },
-          { name = "SEARCH_URL", value = "http://127.0.0.1:5000" }
+          { name = "SEARCH_URL", value = "http://127.0.0.1:5000" },
+          { name = "PRODUCT_URL", value = "http://127.0.0.1:4500" },
+          { name = "API_URL", value = "http://127.0.0.1:4600" }
         ] : [],
         service_name == "api" ? [
           { name = "FRONTEND_URL", value = "http://127.0.0.1:3000" },
@@ -280,8 +359,20 @@ resource "aws_ecs_task_definition" "app" {
         ] : [],
         service_name == "search" ? [
           { name = "PRODUCT_URL", value = "http://127.0.0.1:4500" }
+        ] : [],
+        service_name == "payment" ? [
+          { name = "AWS_REGION", value = var.aws_region },
+          { name = "PUBLIC_BASE_URL", value = "https://${var.domain_name}" },
+          { name = "RECEIPTS_STORAGE_DRIVER", value = "s3" },
+          { name = "RECEIPTS_BUCKET", value = aws_s3_bucket.receipts.bucket }
         ] : []
       )
+      secrets = service_name == "payment" ? [
+        for name in local.payment_secret_names : {
+          name      = name
+          valueFrom = "${var.payment_secrets_arn}:${name}::"
+        }
+      ] : []
       healthCheck = {
         command     = ["CMD-SHELL", "wget -q --spider http://127.0.0.1:${config.port}${config.health_path} || exit 1"]
         interval    = 30
@@ -299,8 +390,8 @@ resource "aws_ecs_task_definition" "app" {
       }
     }
   ])
-  depends_on = [aws_iam_role_policy.ecs_task]
-  tags = local.common_tags
+  depends_on = [aws_iam_role_policy.ecs_task, aws_iam_role_policy.ecs_execution_secrets]
+  tags       = local.common_tags
 }
 
 resource "aws_lb" "main" {
@@ -336,8 +427,67 @@ resource "aws_lb_listener" "http" {
   port              = 80
   protocol          = "HTTP"
   default_action {
+    type = "redirect"
+    redirect {
+      port        = "443"
+      protocol    = "HTTPS"
+      status_code = "HTTP_301"
+    }
+  }
+}
+
+data "aws_route53_zone" "public" {
+  zone_id      = var.route53_zone_id
+  private_zone = false
+}
+
+resource "aws_acm_certificate" "application" {
+  domain_name       = var.domain_name
+  validation_method = "DNS"
+  lifecycle { create_before_destroy = true }
+  tags = local.common_tags
+}
+
+resource "aws_route53_record" "certificate_validation" {
+  for_each = {
+    for option in aws_acm_certificate.application.domain_validation_options : option.resource_record_name => {
+      name   = option.resource_record_name
+      record = option.resource_record_value
+      type   = option.resource_record_type
+    }
+  }
+  zone_id = data.aws_route53_zone.public.zone_id
+  name    = each.value.name
+  type    = each.value.type
+  ttl     = 60
+  records = [each.value.record]
+}
+
+resource "aws_acm_certificate_validation" "application" {
+  certificate_arn         = aws_acm_certificate.application.arn
+  validation_record_fqdns = [for record in aws_route53_record.certificate_validation : record.fqdn]
+}
+
+resource "aws_lb_listener" "https" {
+  load_balancer_arn = aws_lb.main.arn
+  port              = 443
+  protocol          = "HTTPS"
+  certificate_arn   = aws_acm_certificate_validation.application.certificate_arn
+  ssl_policy        = "ELBSecurityPolicy-TLS13-1-2-2021-06"
+  default_action {
     type             = "forward"
     target_group_arn = aws_lb_target_group.frontend.arn
+  }
+}
+
+resource "aws_route53_record" "application" {
+  zone_id = data.aws_route53_zone.public.zone_id
+  name    = var.domain_name
+  type    = "A"
+  alias {
+    name                   = aws_lb.main.dns_name
+    zone_id                = aws_lb.main.zone_id
+    evaluate_target_health = true
   }
 }
 
@@ -365,7 +515,7 @@ resource "aws_ecs_service" "app" {
     container_port   = local.services.frontend.port
   }
 
-  depends_on = [aws_lb_listener.http, aws_iam_role_policy_attachment.ecs_execution]
+  depends_on = [aws_lb_listener.https, aws_iam_role_policy_attachment.ecs_execution]
 
   lifecycle { ignore_changes = [desired_count] }
   tags = local.common_tags

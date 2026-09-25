@@ -23,7 +23,27 @@ variable "environment" {
 variable "image_tag" {
   description = "Immutable image tag deployed for every service. GitHub Actions supplies the commit SHA."
   type        = string
-  default     = "latest"
+  default     = ""
+  validation {
+    condition     = var.image_tag == "" || can(regex("^[0-9a-f]{7,64}$", var.image_tag))
+    error_message = "image_tag must be a Git commit SHA; latest is not permitted for deployments."
+  }
+}
+
+variable "domain_name" {
+  description = "Public DNS name for the HTTPS storefront, for example store.example.com."
+  type        = string
+}
+
+variable "route53_zone_id" {
+  description = "Route 53 public hosted-zone ID that is authoritative for domain_name."
+  type        = string
+}
+
+variable "payment_secrets_arn" {
+  description = "ARN of an existing Secrets Manager JSON secret containing the payment and admin runtime values."
+  type        = string
+  sensitive   = true
 }
 
 variable "vpc_cidr" {

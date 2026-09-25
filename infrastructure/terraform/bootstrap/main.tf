@@ -19,7 +19,7 @@ locals {
 resource "aws_s3_bucket" "state" {
   bucket        = local.state_bucket_name
   force_destroy = false
-  tags = { Project = var.project_name, ManagedBy = "TerraformBootstrap" }
+  tags          = { Project = var.project_name, ManagedBy = "TerraformBootstrap" }
 }
 
 resource "aws_s3_bucket_versioning" "state" {
@@ -29,7 +29,12 @@ resource "aws_s3_bucket_versioning" "state" {
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "state" {
   bucket = aws_s3_bucket.state.id
-  rule { apply_server_side_encryption_by_default { sse_algorithm = "AES256" } }
+
+  rule {
+    apply_server_side_encryption_by_default {
+      sse_algorithm = "AES256"
+    }
+  }
 }
 
 resource "aws_s3_bucket_public_access_block" "state" {
@@ -52,9 +57,9 @@ resource "aws_iam_role" "github_actions" {
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
-      Effect = "Allow"
+      Effect    = "Allow"
       Principal = { Federated = aws_iam_openid_connect_provider.github.arn }
-      Action = "sts:AssumeRoleWithWebIdentity"
+      Action    = "sts:AssumeRoleWithWebIdentity"
       Condition = {
         StringEquals = { "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com" }
         StringLike = {

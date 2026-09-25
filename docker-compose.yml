@@ -17,10 +17,13 @@ services:
       BACKEND_URL: http://backend:4000
       SEARCH_URL: http://search:5000
       PRODUCT_URL: http://product:4500
+      API_URL: http://api:4600
     depends_on:
       backend:
         condition: service_healthy
       search:
+        condition: service_healthy
+      api:
         condition: service_healthy
     healthcheck:
       test:

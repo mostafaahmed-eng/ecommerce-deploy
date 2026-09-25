@@ -1,6 +1,11 @@
 aws_region   = "us-east-1"
 project_name = "ecommerce-demo"
 environment  = "production"
+domain_name  = "store.example.com"
+route53_zone_id = "Z0123456789EXAMPLE"
+
+# ARN of a pre-created Secrets Manager JSON secret. Do not put secret values in tfvars.
+payment_secrets_arn = "arn:aws:secretsmanager:us-east-1:123456789012:secret:ecommerce-demo-production-payment-EXAMPLE"
 
 # Set true only for short-lived demo environments that must be destroyed easily.
 allow_repository_force_delete = false

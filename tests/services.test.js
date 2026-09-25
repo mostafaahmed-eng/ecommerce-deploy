@@ -50,6 +50,13 @@ test('storefront client includes persisted bilingual and cart-drawer controls', 
   assert.match(response.text, /state\.filters\.category/);
 });
 
+test('frontend keeps payment and admin requests behind the internal API gateway', () => {
+  const source = fs.readFileSync(require.resolve('../services/frontend/server'), 'utf8');
+  assert.match(source, /const API_URL = process\.env\.API_URL/);
+  assert.match(source, /\['\/api\/payments', '\/api\/admin', '\/api\/cart'\]/);
+  assert.match(source, /req\.pipe\(upstream\)/);
+});
+
 test('cart drawer opens, closes, reopens, accepts a product, and launches checkout through DOM clicks', async () => {
   const html = fs.readFileSync(require.resolve('../services/frontend/public/index.html'), 'utf8');
   const script = fs.readFileSync(require.resolve('../services/frontend/public/app.js'), 'utf8');

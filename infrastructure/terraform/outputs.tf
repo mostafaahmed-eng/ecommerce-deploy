@@ -1,6 +1,11 @@
 output "application_url" {
-  description = "Public application URL. Allow a few minutes after deployment for health checks."
-  value       = "http://${aws_lb.main.dns_name}"
+  description = "Public HTTPS application URL. Allow DNS and ACM validation to complete before use."
+  value       = "https://${var.domain_name}"
+}
+
+output "receipt_bucket_name" {
+  description = "Private S3 bucket used by the payment service for receipt images."
+  value       = aws_s3_bucket.receipts.bucket
 }
 
 output "ecr_repository_urls" {
