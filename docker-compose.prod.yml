@@ -1,0 +1,270 @@
+# Production Docker Compose for the low-cost AWS live demo (EC2 t4g.small).
+#
+#   Normal deployment:
+#     docker compose -f docker-compose.prod.yml pull
+#     docker compose -f docker-compose.prod.yml up -d --remove-orphans
+#
+#   Optional monitoring demo (NOT started by default - the instance has 2 GiB):
+#     docker compose -f docker-compose.prod.yml --profile monitoring up -d
+#
+# Design rules enforced here:
+#   * only nginx publishes host ports (80 / 443)
+#   * every application container stays on the internal bridge network
+#   * NODE_ENV=production, non-root images, no-new-privileges
+#   * durable state lives on the EBS-backed host filesystem, not in the container
+#   * per-container memory caps so one runaway service cannot OOM the host
+
+name: ecommerce-prod
+
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  networks:
+    - app-net
+  security_opt:
+    - no-new-privileges:true
+  environment:
+    NODE_ENV: production
+  # Hard cap + soft reservation. 7 services x 192 MB + nginx 128 MB = 1.46 GiB
+  # worst case, leaving headroom on a 2 GiB instance. Actual usage is far lower.
+  mem_limit: 192m
+  mem_reservation: 48m
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  frontend:
+    <<: *service-defaults
+    image: ${GHCR_OWNER:-local}/ecommerce-frontend:${IMAGE_TAG:-latest}
+    build: ./services/frontend
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      BACKEND_URL: http://backend:4000
+      SEARCH_URL: http://search:5000
+      PRODUCT_URL: http://product:4500
+      API_URL: http://api:4600
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:3000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  backend:
+    <<: *service-defaults
+    image: ${GHCR_OWNER:-local}/ecommerce-backend:${IMAGE_TAG:-latest}
+    build: ./services/backend
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      PAYMENT_URL: http://payment:4200
+    depends_on:
+      payment:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:4000/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  payment:
+    <<: *service-defaults
+    image: ${GHCR_OWNER:-local}/ecommerce-payment:${IMAGE_TAG:-latest}
+    build: ./services/payment
+    # Secrets (admin credentials, Vodafone Cash number, SMTP, Telegram) are
+    # rendered from SSM Parameter Store by scripts/aws/load-ssm-env.sh. The file
+    # is created with mode 600 on the host and never leaves the instance.
+    env_file:
+      - path: ${APP_ENV_FILE:-./.env.production}
+        required: false
+    environment:
+      NODE_ENV: production
+      PORT: 4200
+      PRODUCT_URL: http://product:4500
+      # Durable, EBS-backed paths (see section 8/9 of DEPLOYMENT_SUMMARY.md).
+      DATA_DIR: /app/data
+      PERSISTENCE_DRIVER: local
+      RECEIPTS_STORAGE_DRIVER: local
+      RECEIPTS_LOCAL_PATH: /app/uploads/receipts
+    volumes:
+      - ${DATA_DIR_HOST:-./data}:/app/data
+      - ${RECEIPTS_DIR_HOST:-./uploads/receipts}:/app/uploads/receipts
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:4200/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  cart:
+    <<: *service-defaults
+    image: ${GHCR_OWNER:-local}/ecommerce-cart:${IMAGE_TAG:-latest}
+    build: ./services/cart
+    environment:
+      NODE_ENV: production
+      PORT: 4300
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:4300/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  product:
+    <<: *service-defaults
+    image: ${GHCR_OWNER:-local}/ecommerce-product:${IMAGE_TAG:-latest}
+    build: ./services/product
+    environment:
+      NODE_ENV: production
+      PORT: 4500
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:4500/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  search:
+    <<: *service-defaults
+    image: ${GHCR_OWNER:-local}/ecommerce-search:${IMAGE_TAG:-latest}
+    build: ./services/search
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      PRODUCT_URL: http://product:4500
+    depends_on:
+      product:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:5000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  api:
+    <<: *service-defaults
+    image: ${GHCR_OWNER:-local}/ecommerce-api:${IMAGE_TAG:-latest}
+    build: ./services/api
+    environment:
+      NODE_ENV: production
+      PORT: 4600
+      FRONTEND_URL: http://frontend:3000
+      BACKEND_URL: http://backend:4000
+      PAYMENT_URL: http://payment:4200
+      SEARCH_URL: http://search:5000
+      CART_URL: http://cart:4300
+      PRODUCT_URL: http://product:4500
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
+    depends_on:
+      backend:
+        condition: service_healthy
+      cart:
+        condition: service_healthy
+      product:
+        condition: service_healthy
+      payment:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:4600/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ---------------------------------------------------------------- nginx ----
+  # The ONLY service that binds host ports. Everything else is reachable only
+  # on the internal app-net bridge network.
+  nginx:
+    <<: *service-defaults
+    image: nginx:1.27-alpine
+    mem_limit: 128m
+    mem_reservation: 32m
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ${NGINX_CONF_DIR:-./nginx}/production.conf:/etc/nginx/nginx.conf:ro
+      - ${NGINX_CONF_DIR:-./nginx}:/etc/nginx/conf-src:ro
+      # Writable on the host so setup-https.sh can drop conf.d/443-ssl.conf in.
+      - ${NGINX_CONF_DIR:-./nginx}/conf.d:/etc/nginx/conf-src/conf.d
+      # ACME webroot + issued certificates (created by setup-https.sh).
+      - ${CERTBOT_WWW:-./certbot-www}:/var/www/certbot
+      - ${LETS_ENCRYPT_DIR:-./letsencrypt}:/etc/letsencrypt:ro
+    depends_on:
+      frontend:
+        condition: service_healthy
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/nginx-health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ------------------------------------------------- optional monitoring ----
+  # Enable with:  docker compose -f docker-compose.prod.yml --profile monitoring up -d
+  # Left out of the default deployment because the demo box only has 2 GiB.
+  prometheus:
+    <<: *service-defaults
+    profiles: [monitoring]
+    image: prom/prometheus:v2.53.0
+    mem_limit: 160m
+    mem_reservation: 48m
+    volumes:
+      - ./monitoring/prometheus/prometheus.compose.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=6h
+      - --storage.tsdb.retention.size=128MB
+      - --web.enable-lifecycle
+    ports: []
+
+  grafana:
+    <<: *service-defaults
+    profiles: [monitoring]
+    image: grafana/grafana:11.1.0
+    mem_limit: 160m
+    mem_reservation: 48m
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    ports: []
+
+  # Bridges nginx stub_status (Prometheus text format) - ~5 MB resident.
+  nginx-exporter:
+    <<: *service-defaults
+    profiles: [monitoring]
+    image: nginx/nginx-prometheus-exporter:1.3.0
+    mem_limit: 48m
+    mem_reservation: 16m
+    command:
+      - --nginx.scrape-uri=http://nginx/nginx_status
+    depends_on:
+      nginx:
+        condition: service_healthy
+    ports: []
+
+networks:
+  app-net:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  grafana-data:
