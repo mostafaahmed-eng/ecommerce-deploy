@@ -1,0 +1,53 @@
+pipeline {
+    agent any
+    
+    environment {
+        DOCKER_REGISTRY = credentials('docker-registry')
+    }
+
+    options {
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+        timeout(time: 1, unit: 'HOURS')
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Build Docker Images') {
+            steps {
+                script {
+                    def services = ['frontend', 'backend', 'payment', 'search']
+                    services.each { svc ->
+                        sh "docker build -t ${DOCKER_REGISTRY_USR}/${svc}:${env.BUILD_NUMBER} ./services/${svc}"
+                        sh "docker push ${DOCKER_REGISTRY_USR}/${svc}:${env.BUILD_NUMBER}"
+                    }
+                }
+            }
+        }
+
+        stage('Deploy to K8s') {
+            steps {
+                withCredentials([file(credentialsId: 'kubeconfig', variable: 'KUBECONFIG')]) {
+                    sh '''
+                        kubectl set image deployment/frontend frontend=${DOCKER_REGISTRY_USR}/frontend:${BUILD_NUMBER}
+                        kubectl set image deployment/backend backend=${DOCKER_REGISTRY_USR}/backend:${BUILD_NUMBER}
+                        kubectl set image deployment/payment payment=${DOCKER_REGISTRY_USR}/payment:${BUILD_NUMBER}
+                        kubectl set image deployment/search search=${DOCKER_REGISTRY_USR}/search:${BUILD_NUMBER}
+                        kubectl rollout status deployment/frontend -n ecommerce
+                        kubectl rollout status deployment/backend -n ecommerce
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        failure {
+            sh 'kubectl rollout undo deployment/frontend deployment/backend -n ecommerce'
+        }
+    }
+}

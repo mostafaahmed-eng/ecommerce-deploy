@@ -449,6 +449,30 @@ docs/                          Project history, roadmap and the AWS cost/safety 
 DEPLOYMENT_SUMMARY.md          What changed, how it was verified, and its limits
 ```
 
+## Repository history (preserved artifacts)
+
+This branch was joined with `origin/main` using `git merge
+--allow-unrelated-histories`, so the original prototype's history and the
+current implementation now share one branch. The prototype's files are
+preserved rather than deleted, even though nothing in the current system
+invokes them:
+
+| Path | What it is | Status today |
+| --- | --- | --- |
+| `Jenkinsfile` | Root Jenkins pipeline that pushes GHCR images | Not invoked by any current workflow |
+| `ci-cd/jenkins/Jenkinsfile` | Earlier variant of the Jenkins pipeline | Archived reference |
+| `ci-cd/github-actions/ci-cd.yml` | Earlier GHCR GitHub Actions workflow | Superseded by `.github/workflows/` |
+| `infrastructure/ansible/playbooks/deploy.yml` | Ansible deployment playbook | Archived reference |
+| `infrastructure/terraform/modules/vpc/` | VPC Terraform module | Not referenced by any of the three root modules |
+| `infrastructure/terraform/modules/eks/` | EKS Terraform module | Not referenced by any of the three root modules |
+| `services/web/` | Prototype static site served by `serve` | Superseded by `services/frontend` |
+
+The live configuration is the one documented above: `.github/workflows/` holds
+the two active pipelines, `infrastructure/terraform/` holds the three
+validated root modules, and `services/` holds the seven application services.
+See [`docs/PROJECT_HISTORY.md`](docs/PROJECT_HISTORY.md) for source
+attribution and the consolidation decisions behind this split.
+
 ## Further reading
 
 - [`DEPLOYMENT_SUMMARY.md`](DEPLOYMENT_SUMMARY.md) — 22-section summary of the low-cost profile, including what was verified locally versus what still needs AWS, DNS or GitHub configuration.
