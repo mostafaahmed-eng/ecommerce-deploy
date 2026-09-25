@@ -1,6 +1,6 @@
 # E-Commerce Deployment Platform
 
-A portfolio-ready e-commerce microservices demo with reproducible local development and automated deployment to AWS ECS Fargate. This repository is the maintained implementation that consolidates the original DEPI project plan and prototype into one working codebase.
+A portfolio-ready e-commerce microservices demo with reproducible local development and two automated deployment paths to AWS: a production-oriented **ECS Fargate** profile and a cost-optimized **EC2 + Docker Compose** profile for a live demo. This repository is the maintained implementation that consolidates the original DEPI project plan and prototype into one working codebase.
 
 ## Order email notifications
 
@@ -10,11 +10,14 @@ Email delivery is disabled by default, and an unavailable SMTP server never prev
 
 - Seven Node.js services: frontend, API gateway, backend, product, cart, search, and demo payment.
 - Docker Compose with health checks, isolated networking, non-root containers, and Nginx routing.
-- Automated tests for service health and core product, cart, search, order, and payment behavior.
+- A production Compose stack (`docker-compose.prod.yml`) that publishes only Nginx on 80/443, persists orders and receipts to the host, and puts Prometheus/Grafana behind an optional `monitoring` profile.
+- Automated tests for service health and core product, cart, search, order, and payment behavior — including API route-wiring and persistence-survival regression tests.
 - Terraform for ECR, ECS Fargate, an Application Load Balancer, VPC networking, CloudWatch Logs, and autoscaling.
+- A second, additive Terraform profile (`infrastructure/terraform/free-tier-ec2/`): one `t4g.small` behind Nginx, no NAT, no ALB, no RDS, least-privilege IAM and no SSH.
 - A persistent DynamoDB product catalog on AWS, with an embedded catalog for zero-configuration local development.
 - GitHub Actions CI/CD using short-lived AWS OIDC credentials—no permanent AWS access keys.
 - ECR image scanning, immutable commit-SHA releases, build cache, SBOM/provenance, and deployment smoke tests.
+- Multi-arch (`linux/amd64` + `linux/arm64`) images pushed to GHCR, deployed over AWS Systems Manager Run Command with automatic rollback.
 
 > [!IMPORTANT]
 > Vodafone Cash transfers are reviewed manually. A screenshot is not proof of payment: the owner must confirm the transfer in the actual Vodafone Cash account before marking an order as paid.
@@ -24,6 +27,68 @@ The project history, source-repository attribution, and team credits are recorde
 ## Architecture
 
 The AWS deployment uses one multi-container Fargate task to keep a demo environment reasonably small. Only the frontend port is reachable through the ALB. The remaining services communicate inside the task over localhost and are not publicly exposed. The product service reads the catalog from an encrypted DynamoDB table using a least-privilege ECS task role.
+
+Both deployment profiles run the exact same seven services. Only the transport, ingress and state differ:
+
+```mermaid
+flowchart LR
+  subgraph APP["Shared application (7 services)"]
+    FE[frontend]
+    GW[api gateway]
+    BE[backend]
+    PR[product]
+    CA[cart]
+    SE[search]
+    PA[payment]
+  end
+
+  subgraph A["Profile A — ECS Fargate (production-oriented)"]
+    ALB["Application Load Balancer"]
+    TASK["Fargate task"]
+    DDB[("DynamoDB catalog")]
+    S3REC[("Private S3 receipts")]
+    ECRa["ECR · SHA tags"]
+  end
+
+  subgraph B["Profile B — EC2 (low-cost live demo)"]
+    NGX["Nginx :80/:443"]
+    VM["EC2 t4g.small · Docker Compose"]
+    GHCRb["GHCR · SHA tags"]
+    SSM["SSM Run Command<br/>(no SSH)"]
+    SSMPS["Parameter Store<br/>/ecommerce/*"]
+    EBS[("gp3 · /opt/ecommerce/data")]
+  end
+
+  ALB --> TASK --> APP
+  TASK --> DDB
+  TASK --> S3REC
+  ECRa --> TASK
+
+  NGX --> VM --> APP
+  VM --> EBS
+  GHCRb --> VM
+  SSM --> VM
+  SSMPS --> VM
+```
+
+## Deployment profiles
+
+|  | **Profile A — ECS Fargate** | **Profile B — EC2 (low-cost demo)** |
+| --- | --- | --- |
+| Purpose | Production-oriented showcase | Real AWS site at the lowest sensible cost |
+| Compute | ECS Fargate tasks | One `t4g.small` (Graviton/ARM64) + Docker Compose |
+| Ingress | Application Load Balancer + ACM + Route 53 | Nginx in a container, ports **80/443 only** |
+| Networking | VPC, private subnets | One VPC, **one public subnet**, IGW — **no NAT** |
+| State | DynamoDB catalog, private S3 receipts, remote Terraform state in S3 | JSON file + receipts on the EBS volume (single instance) |
+| Secrets | AWS Secrets Manager (never in Terraform or `tfvars`) | SSM Parameter Store `/ecommerce/*` → `/opt/ecommerce/.env.production` (mode 600) |
+| Images | ECR | GHCR `ghcr.io/<owner>/ecommerce-<service>:<SHA>` |
+| Auth to AWS | GitHub OIDC | GitHub OIDC |
+| Deployment | `ci-cd.yml` → `terraform apply` → ECS | `deploy-free-tier.yml` → **SSM Run Command** (no SSH) |
+| Access | ALB URL | Instance IP/DNS; HTTPS is an optional second stage |
+| Terraform | `infrastructure/terraform/` + `bootstrap/` | `infrastructure/terraform/free-tier-ec2/` |
+| Rough cost | ALB + Fargate + data transfer — metered, not free | **$0 compute during the T4g free trial** (≤ 750 hrs/mo through Dec 31 2026); storage/network still billed. ≈ $17.25/month On-Demand from Jan 1, 2027 — see [cost doc](docs/AWS_FREE_TIER_DEPLOYMENT.md) |
+
+Both profiles are **additive**: neither was removed or restructured to make room for the other. Full details, verification status and known limitations are in [`DEPLOYMENT_SUMMARY.md`](DEPLOYMENT_SUMMARY.md).
 
 ## Local development
 
@@ -169,11 +234,189 @@ Do not apply an image tag that has not already been pushed to every ECR reposito
 
 Each deployment uses an immutable Git commit SHA. The safest rollback is to rerun the workflow for a known-good commit or revert the bad commit and merge the revert. ECS retains previous task-definition revisions for emergency manual rollback.
 
+## Low-cost live demo (Profile B — EC2 + Docker Compose)
+
+A second, independent profile that puts the whole stack on a single small VM.
+Full rationale, cost tables and the pre-apply checklist live in
+[`docs/AWS_FREE_TIER_DEPLOYMENT.md`](docs/AWS_FREE_TIER_DEPLOYMENT.md).
+
+> [!IMPORTANT]
+> At the time this deployment profile was prepared, AWS provides a **T4g free
+> trial** covering up to **750 hours/month of `t4g.small`** usage through
+> **December 31, 2026**, for new and existing AWS customers. Regular On-Demand
+> billing starts **January 1, 2027**.
+
+> [!CAUTION]
+> **Nothing here guarantees a $0 bill.** Other resources, surplus CPU credits,
+> network usage, storage, public IPv4 usage outside applicable allowances, and
+> usage after the trial may incur charges. Eligibility and AWS terms can
+> change — confirm the current offer before you rely on it. Enable the budget
+> alert on the very first apply.
+
+### Run the production stack locally first
+
+```bash
+docker compose -f docker-compose.prod.yml build
+HTTP_PORT=18080 docker compose -f docker-compose.prod.yml up -d
+./scripts/smoke-test.sh --base-url http://localhost:18080
+docker compose -f docker-compose.prod.yml down          # data survives in ./data
+```
+
+The optional monitoring stack:
+
+```bash
+docker compose -f docker-compose.prod.yml --profile monitoring up -d
+```
+
+### 1. Provision the host
+
+```bash
+cd infrastructure/terraform/free-tier-ec2
+terraform init -backend=false
+terraform fmt -check -recursive
+terraform validate
+terraform plan \
+  -var='create_budget=true' \
+  -var='budget_email=you@example.com' \
+  -var='budget_limit_usd=10'
+# read the entire plan, then:
+terraform apply
+terraform output instance_id
+```
+
+Amazon Linux 2023, one VPC, one public subnet, an IGW, a security group that
+allows **80/443 only**, IMDSv2 required, an encrypted 20 GB gp3 root volume, and
+an instance role limited to `AmazonSSMManagedInstanceCore` plus read-only
+`/ecommerce/*`. **No SSH key and no port 22.**
+
+### 2. Store the secrets
+
+```bash
+scripts/aws/load-ssm-env.sh --list     # parameter NAMES only — never values
+```
+
+`scripts/aws/load-ssm-env.sh` reads `/ecommerce/*` (paginated, `--with-decryption`)
+and renders `/opt/ecommerce/.env.production` with mode `600` using an atomic
+rename. Secret values are never printed and the file is git-ignored. See the
+*Parameter Store layout* section of the cost doc for the exact keys.
+
+### 3. Configure GitHub
+
+| Kind | Name | Required | Purpose |
+| --- | --- | --- | --- |
+| Secret | `AWS_ROLE_ARN` | yes | IAM role assumed through GitHub OIDC |
+| Variable | `AWS_REGION` | yes | Region for `configure-aws-credentials` |
+| Variable | `AWS_INSTANCE_ID` | yes | Target for SSM Run Command |
+| Variable | `APP_URL` | recommended | Base URL for the post-deploy smoke test |
+
+`TF_STATE_BUCKET` is **not** used by this workflow — the EC2 profile keeps
+Terraform state local — but the ECS profile's remote-state support is untouched.
+Use GHCR **public** packages so anyone can pull the demo images; if the packages
+are private, the host needs `docker login ghcr.io` with a `read:packages` token.
+
+### 4. Deploy
+
+Merge to `main` (or run `workflow_dispatch` **from `main` only**). The workflow:
+
+1. `validate` — tests, syntax checks, `terraform fmt`/`validate` for all three modules, Compose config, `nginx -t`. Runs on every PR and **never** deploys.
+2. `build` — QEMU + Buildx, `linux/amd64,linux/arm64`, pushes `ghcr.io/<owner>/ecommerce-<service>:<SHA>` (and `latest`).
+3. `deploy` — GitHub **OIDC** → AWS → `aws ssm send-command` running
+   `/opt/ecommerce/compose/deploy.sh --sha <SHA>` → poll → public smoke tests.
+
+Static AWS keys are never used. `id-token: write` is granted only to the deploy job.
+
+### 5. Operate without SSH
+
+```bash
+aws ssm start-session --target "$INSTANCE_ID" --region "$AWS_REGION"
+aws ssm send-command --target "$INSTANCE_ID" \
+  --document-name AWS-RunShellScript \
+  --parameters 'commands=["docker ps"]'
+```
+
+On the host: `ecommerce-health`, `ec-status`, `ec-logs`, and
+
+```text
+/opt/ecommerce/.env.production     secrets, mode 600
+/opt/ecommerce/data/               orders, sessions, notifications
+/opt/ecommerce/uploads/receipts/   uploaded receipts (random names)
+/opt/ecommerce/.deployment/current   active image SHA
+/opt/ecommerce/.deployment/previous  last known-good SHA (rollback target)
+```
+
+### 6. Rollback
+
+`deploy.sh` rotates `previous`/`current` **before** touching running containers,
+then waits for health and runs `scripts/smoke-test.sh`. If the pull, the start,
+the health wait or the smoke tests fail, it prints non-secret diagnostics
+(`compose ps` + the last log lines with secrets redacted) and redeploys
+`previous` automatically. The GitHub job still goes red.
+
+Manual rollback:
+
+```bash
+bash /opt/ecommerce/compose/deploy.sh --rollback
+```
+
+### 7. Smoke tests
+
+`scripts/smoke-test.sh` is credential-free (so nothing sensitive can reach a CI
+log) and checks `/`, `/nginx-health`, `/api/health`, `/api/products`,
+`/api/search`, `/api/categories`, `/api/cart/*`, `/api/payments/*`,
+`/api/admin/*` and `/api/contact`. **400/401 are a PASS** — they prove the route
+exists and is guarded. **404, 502 and 503 are always a FAIL.**
+
+### 8. Optional: HTTPS
+
+HTTP works immediately with no domain. When you have one:
+
+```bash
+scripts/aws/setup-https.sh example.com admin@example.com   # add --staging first if you like
+```
+
+It validates the arguments, warns if DNS does not point at the instance,
+issues a Let's Encrypt certificate over HTTP-01, renders the TLS server block,
+runs `nginx -t` and **only then** reloads — reverting to HTTP-only if the config
+is rejected. A twice-daily renewal job reloads nginx only when the certificate
+actually changed. The owner dashboard uses a `Secure` cookie, so admin login
+becomes fully functional only after this step.
+
+### 9. Teardown
+
+```bash
+cd infrastructure/terraform/free-tier-ec2
+terraform plan -destroy
+terraform destroy
+```
+
+This destroys `/opt/ecommerce/data` and `/opt/ecommerce/uploads/receipts` with
+the instance — export anything you want to keep first.
+
+## Required GitHub settings at a glance
+
+| Profile | Workflow | Secrets | Variables |
+| --- | --- | --- | --- |
+| A — ECS | `ci-cd.yml` | `AWS_ROLE_ARN`, `TF_STATE_BUCKET`, `PAYMENT_SECRETS_ARN` | `AWS_REGION`, `PUBLIC_DOMAIN_NAME`, `ROUTE53_ZONE_ID` |
+| B — EC2 | `deploy-free-tier.yml` | `AWS_ROLE_ARN` | `AWS_REGION`, `AWS_INSTANCE_ID`, `APP_URL` |
+
+Only `refs/heads/main` may deploy. Pull requests validate only. GitHub OIDC is
+used by both; no long-lived AWS key exists in either workflow.
+
 ## Cost and cleanup
 
 AWS resources incur charges, notably Fargate and the Application Load Balancer. This design avoids a NAT Gateway and an EKS control-plane fee, but it is not free.
 
-To remove the application infrastructure:
+**Profile B is the cheaper of the two.** During the current T4g free trial
+(≤ 750 hours/month of `t4g.small` through **December 31, 2026**) its *compute*
+is covered; storage, network and public IPv4 outside applicable allowances are
+still billed, so expect a small nonzero amount rather than nothing. From
+**January 1, 2027** the same instance bills On-Demand at roughly **$17.25/month**
+running 24/7 in `us-east-1` (about $1.60 if you stop it). See
+[`docs/AWS_FREE_TIER_DEPLOYMENT.md`](docs/AWS_FREE_TIER_DEPLOYMENT.md) for the
+full breakdown of avoided cost traps, free-tier caveats, the pre-apply
+checklist and budget-alert commands. **Neither profile guarantees a $0 bill.**
+
+To remove the Profile A application infrastructure:
 
 ```bash
 cd infrastructure/terraform
@@ -182,15 +425,32 @@ terraform destroy -var="allow_repository_force_delete=true"
 
 Verify the exact account and plan before approving a destroy. Keep the bootstrap state bucket until the application state is no longer needed.
 
+For Profile B the teardown is `cd infrastructure/terraform/free-tier-ec2 && terraform destroy`, and the optional budget (disabled by default) goes with it.
+
 ## Repository layout
 
 ```text
 services/                      Node.js services and Dockerfiles
-tests/                         Automated service tests
+tests/                         Automated service tests (route wiring, persistence, storefront)
+nginx/                         Production reverse proxy (HTTP + reusable snippets + TLS template)
+docker-compose.yml             Development stack
+docker-compose.prod.yml        Production stack (nginx-only ingress, monitoring profile)
+scripts/smoke-test.sh          Credential-free post-deployment checks
+scripts/aws/load-ssm-env.sh    SSM Parameter Store -> /opt/ecommerce/.env.production (600)
+scripts/aws/deploy.sh          Host-side deploy, health wait, diagnostics, rollback
+scripts/aws/setup-https.sh     Optional stage-two Let's Encrypt enablement
 infrastructure/terraform/      AWS ECS infrastructure
 infrastructure/terraform/bootstrap/  State bucket and GitHub OIDC
+infrastructure/terraform/free-tier-ec2/  Low-cost single-VM profile
 infrastructure/k8s/            Optional Kubernetes learning deployment
 monitoring/                    Prometheus reference configuration
-docs/                          Project history and delivery roadmap
-.github/workflows/             CI/CD pipeline
+docs/                          Project history, roadmap and the AWS cost/safety guide
+.github/workflows/             ci-cd.yml (ECS) and deploy-free-tier.yml (EC2)
+DEPLOYMENT_SUMMARY.md          What changed, how it was verified, and its limits
 ```
+
+## Further reading
+
+- [`DEPLOYMENT_SUMMARY.md`](DEPLOYMENT_SUMMARY.md) — 22-section summary of the low-cost profile, including what was verified locally versus what still needs AWS, DNS or GitHub configuration.
+- [`docs/AWS_FREE_TIER_DEPLOYMENT.md`](docs/AWS_FREE_TIER_DEPLOYMENT.md) — resources created, honest cost estimates, free-tier caveats, pre-apply checklist, budget alerts, Parameter Store layout and teardown.
+- [`docs/PROJECT_HISTORY.md`](docs/PROJECT_HISTORY.md) and [`docs/ROADMAP.md`](docs/ROADMAP.md) — source attribution and milestones.
