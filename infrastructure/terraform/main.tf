@@ -223,6 +223,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "receipts" {
   rule {
     id     = "expire-noncurrent-receipts"
     status = "Enabled"
+    # An empty filter matches every object in the bucket; without it the AWS
+    # provider rejects the rule ("filter or prefix is required").
+    filter {}
     noncurrent_version_expiration { noncurrent_days = 30 }
   }
 }

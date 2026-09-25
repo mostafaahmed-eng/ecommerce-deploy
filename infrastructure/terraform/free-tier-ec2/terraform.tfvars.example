@@ -1,0 +1,27 @@
+# Copy to terraform.tfvars (git-ignored) and adjust before applying.
+aws_region   = "us-east-1"
+project_name = "ecommerce-demo"
+environment  = "demo"
+
+# Graviton / ARM64, 2 vCPU / 2 GiB.
+instance_type      = "t4g.small"
+root_volume_size_gb = 20
+
+# Set an AZ explicitly if your account has restrictions; otherwise the first
+# available AZ in the region is used.
+# availability_zone = "us-east-1a"
+
+# Administration happens over Session Manager. Port 22 is never opened.
+ssm_agent_enabled = true
+
+# Only ports 80/443 are published. Keep 0.0.0.0/0 for a public demo, or narrow
+# it to your own IP while testing.
+allowed_http_cidrs = ["0.0.0.0/0"]
+
+# Namespace the instance may read from SSM Parameter Store.
+parameter_path_prefix = "/ecommerce/"
+
+# Optional cost guard-rail. Off by default: AWS Budgets is account-level.
+create_budget   = false
+budget_limit_usd = "10"
+# budget_email   = "you@example.com"
