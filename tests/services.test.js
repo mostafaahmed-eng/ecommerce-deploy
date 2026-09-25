@@ -189,3 +189,177 @@ test('order emails use configured recipient, escape HTML, and omit tracking toke
   assert.equal(sent.length, 1);
   assert.equal(sent[0].to, 'recipient@example.test');
 });
+
+// ---------------------------------------------------------------------------
+// Regression: the public route wiring that silently broke on the first AWS
+// deployment. /api/health answered while /api/payments/* and /api/admin/*
+// 404'd because traffic reached the frontend instead of the API gateway.
+// ---------------------------------------------------------------------------
+
+test('gateway routes every required public path to the right service', () => {
+  const { target } = api._test;
+  const expectations = [
+    ['health', 'backend', '/api/health'],
+    ['products', 'product', '/products'],
+    ['products/12', 'product', '/products/12'],
+    ['categories', 'product', '/categories'],
+    ['search', 'search', '/search'],
+    ['cart/abc', 'cart', '/cart/abc'],
+    ['payments/orders', 'payment', '/orders'],
+    ['payments/config', 'payment', '/config'],
+    ['admin/login', 'payment', '/admin/login'],
+    ['admin/orders', 'payment', '/admin/orders'],
+    ['orders', 'backend', '/api/orders'],
+    ['contact', 'frontend', '/api/contact']
+  ];
+
+  for (const [name, serviceKey, upstreamPath] of expectations) {
+    const [base, path] = target(name);
+    assert.equal(base, api._test.SERVICES[serviceKey], `path "${name}" must hit ${serviceKey}`);
+    assert.equal(path, upstreamPath, `path "${name}" must be forwarded unchanged`);
+  }
+});
+
+test('nginx production config proxies /api/ to the gateway using Docker DNS', () => {
+  const serverConfig = fs.readFileSync(require.resolve('../nginx/conf.d/00-default.conf'), 'utf8');
+  const mainConfig = fs.readFileSync(require.resolve('../nginx/production.conf'), 'utf8');
+
+  // The whole /api/ tree must land on the gateway, not on the frontend.
+  const apiLocation = serverConfig.match(/location \/api\/ \{[\s\S]*?\n    \}/);
+  assert.ok(apiLocation, 'nginx must define a location /api/ block');
+  assert.match(apiLocation[0], /proxy_pass\s+http:\/\/api_gateway;/);
+  assert.doesNotMatch(apiLocation[0], /frontend_app/, 'the /api/ location must never fall back to the frontend');
+
+  // Upstreams must use service DNS names, never container IPs.
+  assert.match(mainConfig, /upstream api_gateway\s*\{\s*server api:4600;/);
+  assert.match(mainConfig, /upstream frontend_app\s*\{\s*server frontend:3000;/);
+  assert.doesNotMatch(mainConfig, /server\s+\d{1,3}(\.\d{1,3}){3}:/);
+
+  // Required functional paths must be covered by the gateway routing table.
+  const { target } = api._test;
+  for (const path of ['health', 'products', 'search', 'payments/orders', 'admin/orders']) {
+    assert.ok(target(path).length === 2, `${path} must resolve to an upstream`);
+  }
+});
+
+test('public contact section is mailto based and exposes no phone by default', async () => {
+  const html = fs.readFileSync(require.resolve('../services/frontend/public/index.html'), 'utf8');
+  const response = await request(frontend).get('/api/contact').expect(200);
+
+  assert.match(html, /id="contact"/);
+  assert.match(html, /class="primary contact-button"/);
+  assert.match(html, /mailto:mostafaahmed862004@gmail\.com/);
+  assert.match(html, /mostafaahmed862004@gmail\.com/);
+  // No phone number is rendered unless PUBLIC_CONTACT_PHONE is configured.
+  assert.doesNotMatch(html, /href="tel:/);
+
+  assert.equal(response.body.email, 'mostafaahmed862004@gmail.com');
+  assert.equal(response.body.phone, '');
+
+  const serverSource = fs.readFileSync(require.resolve('../services/frontend/server'), 'utf8');
+  assert.match(serverSource, /PUBLIC_CONTACT_PHONE/);
+  const clientSource = fs.readFileSync(require.resolve('../services/frontend/public/app.js'), 'utf8');
+  assert.match(clientSource, /contactPhone/);
+  assert.match(clientSource, /contact:\{eyebrow/);
+});
+
+// ---------------------------------------------------------------------------
+// Persistence (section 8): orders and receipts must survive `docker compose
+// down` / `up -d`. The store is opt-in through PERSISTENCE_DRIVER + DATA_DIR so
+// the rest of the suite stays side-effect free, which is why this test drives
+// the adapter directly against a temporary directory.
+// ---------------------------------------------------------------------------
+test('payment store round-trips orders across a simulated restart', () => {
+  const os = require('node:os');
+  const path = require('node:path');
+  const storeModule = require.resolve('../services/payment/src/store');
+  const cached = require.cache[storeModule];
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ecommerce-store-'));
+  const quiet = { info() {}, warn() {}, error() {} };
+  const reload = () => { delete require.cache[storeModule]; return require(storeModule); };
+  const emptyMaps = () => ({ orders: new Map(), notifications: new Map(), sessions: new Map() });
+
+  const previousEnv = {
+    PERSISTENCE_DRIVER: process.env.PERSISTENCE_DRIVER,
+    DATA_DIR: process.env.DATA_DIR
+  };
+  const restoreEnv = (key, value) => { if (value === undefined) delete process.env[key]; else process.env[key] = value; };
+
+  let first;
+  try {
+    process.env.PERSISTENCE_DRIVER = 'local';
+    process.env.DATA_DIR = dir;
+
+    // --- first "process": write an order -----------------------------------
+    first = reload();
+    assert.equal(first.enabled(), true, 'local driver + DATA_DIR must enable persistence');
+    assert.equal(first.DRIVER, 'local');
+    assert.equal(first.STORE_FILE, path.join(dir, 'payment-store.json'));
+
+    const live = emptyMaps();
+    const handle = first.attach(live, quiet);
+    assert.equal(handle.enabled, true);
+
+    const order = {
+      orderId: 'order-round-trip',
+      status: 'awaiting_payment',
+      amountCents: 4899900,
+      currency: 'EGP',
+      items: [{ productId: '1', name: 'Laptop Pro', quantity: 1, unitPriceCents: 4899900 }],
+      customer: { fullName: 'Persist Test', phone: '01000000000', shippingAddress: '1 Test Street', city: 'Cairo' },
+      auditLog: [],
+      createdAt: new Date().toISOString()
+    };
+    live.orders.set(order.orderId, order);
+    live.notifications.set('note-1', { notificationId: 'note-1', orderId: order.orderId, status: 'awaiting_payment' });
+    live.sessions.set('expired-session', { username: 'admin', csrfToken: 'x', expiresAt: Date.now() - 1000 });
+    live.sessions.set('live-session', { username: 'admin', csrfToken: 'y', expiresAt: Date.now() + 600000 });
+
+    assert.equal(handle.flush(), true, 'flush must write the file');
+    assert.ok(fs.existsSync(first.STORE_FILE), 'store file must exist on disk');
+    const onDisk = JSON.parse(fs.readFileSync(first.STORE_FILE, 'utf8'));
+    assert.equal(onDisk.version, 1);
+    assert.equal(onDisk.orders['order-round-trip'].amountCents, 4899900);
+    // No tracking token may ever reach the file.
+    assert.equal(JSON.stringify(onDisk).includes('trackingToken'), false);
+    handle.stop();
+
+    // --- second "process": restart -----------------------------------------
+    const second = reload();
+    const restored = emptyMaps();
+    const result = second.hydrate(restored, quiet);
+
+    assert.equal(result.loaded, true);
+    assert.equal(result.orders, 1, 'the order must be restored');
+    assert.equal(result.notifications, 1);
+    assert.equal(result.sessions, 1, 'the expired session must NOT be restored');
+    assert.deepEqual(restored.orders.get('order-round-trip'), order, 'order must round-trip unchanged');
+    assert.ok(restored.sessions.has('live-session'));
+    assert.equal(restored.sessions.has('expired-session'), false);
+
+    // --- corrupt file: quarantine, do not crash ----------------------------
+    fs.writeFileSync(second.STORE_FILE, '{ this is not json', 'utf8');
+    const afterCorruption = emptyMaps();
+    const corruptResult = second.hydrate(afterCorruption, quiet);
+    assert.equal(corruptResult.loaded, false);
+    assert.equal(corruptResult.reason, 'corrupt');
+    assert.equal(afterCorruption.orders.size, 0, 'a corrupt store starts empty instead of throwing');
+    const quarantined = fs.readdirSync(dir).filter(name => name.includes('.corrupt-'));
+    assert.equal(quarantined.length, 1, 'the unreadable file must be preserved for recovery');
+
+    // --- persistence is opt-in ---------------------------------------------
+    delete process.env.DATA_DIR;
+    const memoryOnly = reload();
+    assert.equal(memoryOnly.enabled(), false, 'without DATA_DIR the service must stay stateless');
+    const memoryMaps = emptyMaps();
+    const memoryHandle = memoryOnly.attach(memoryMaps, quiet);
+    assert.equal(memoryHandle.enabled, false);
+    assert.equal(memoryHandle.flush(), false, 'memory mode must never write');
+  } finally {
+    restoreEnv('PERSISTENCE_DRIVER', previousEnv.PERSISTENCE_DRIVER);
+    restoreEnv('DATA_DIR', previousEnv.DATA_DIR);
+    delete require.cache[storeModule];
+    if (cached) require.cache[storeModule] = cached;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

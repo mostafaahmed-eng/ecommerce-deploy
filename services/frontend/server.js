@@ -61,6 +61,16 @@ app.get('/api/search', async (req, res) => {
   }
 });
 
+// Public contact details. The email is a fixed demo value; the phone number is
+// opt-in through PUBLIC_CONTACT_PHONE and stays hidden when it is unset.
+app.get('/api/contact', (req, res) => {
+  res.set('Cache-Control', 'public, max-age=300');
+  res.json({
+    email: (process.env.CONTACT_EMAIL || 'mostafaahmed862004@gmail.com').trim(),
+    phone: (process.env.PUBLIC_CONTACT_PHONE || '').trim()
+  });
+});
+
 // In ECS the ALB reaches this frontend container directly. Keep customer
 // payment, receipt, cart, and admin requests on the same-origin public path
 // by streaming them to the internal API gateway (including multipart uploads).

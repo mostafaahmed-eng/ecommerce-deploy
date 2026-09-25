@@ -1,20 +1,39 @@
-node_modules/
+# --- Secrets and local environment -------------------------------------------
+# Never commit real credentials. .env.example stays tracked as the reference.
 .env
 .env.*
-!.env.example
-*.log
+
+# --- Dependencies and build output -------------------------------------------
+node_modules/
 coverage/
 dist/
 build/
-.DS_Store
-.git/
+*.log
+crash.log
+
+# --- Local runtime data (bind mounts of the production stack) ----------------
+# /opt/ecommerce/data and /opt/ecommerce/uploads on the host in production.
+data/
+uploads/
+certbot-www/
+letsencrypt/
+.deployment/
+
+# --- Terraform state, plans and variable files -------------------------------
 .terraform/
 *.tfstate
 *.tfstate.*
 *.tfplan
 *.tfvars
 !*.tfvars.example
+
+# --- Keys and certificates ----------------------------------------------------
 *.pem
 *.key
-crash.log
-uploads/
+*.crt
+*.p12
+*.pfx
+
+# --- Misc ---------------------------------------------------------------------
+.git/
+.DS_Store

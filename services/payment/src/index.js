@@ -1,3 +1,7 @@
+// Load the local .env BEFORE any module that reads process.env at require
+// time (src/store.js reads DATA_DIR / PERSISTENCE_DRIVER on load).
+require('dotenv').config();
+
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
@@ -8,12 +12,19 @@ const http = require('http');
 const https = require('https');
 const { Readable } = require('stream');
 const email = require('./email');
-require('dotenv').config();
+const store = require('./store');
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
 const STATUS = Object.freeze({ AWAITING: 'awaiting_payment', SUBMITTED: 'receipt_submitted', REJECTED: 'payment_rejected', PAID: 'paid', CANCELLED: 'cancelled' });
 const NEXT = { [STATUS.AWAITING]: [STATUS.SUBMITTED, STATUS.CANCELLED], [STATUS.SUBMITTED]: [STATUS.PAID, STATUS.REJECTED, STATUS.CANCELLED], [STATUS.REJECTED]: [STATUS.SUBMITTED, STATUS.CANCELLED], [STATUS.PAID]: [], [STATUS.CANCELLED]: [] };
 const orders = new Map(), notifications = new Map(), sessions = new Map(), rates = new Map();
+// Restore persisted orders / notifications / owner sessions before any request
+// can be served, then keep mirroring them to disk (see src/store.js).
+const restored = store.hydrate({ orders, notifications, sessions });
+const persistence = store.attach({ orders, notifications, sessions });
+if (restored.loaded) {
+  console.info(`Payment store restored: ${restored.orders} orders, ${restored.sessions} sessions, ${restored.notifications} notifications`);
+}
 const receiptDriver = process.env.RECEIPTS_STORAGE_DRIVER || 'local';
 const receiptBucket = process.env.RECEIPTS_BUCKET || '';
 let awsCredentials;
@@ -90,7 +101,7 @@ function verifyPassword(password, encoded) { try { const [kind, salt, expected] 
 const app = express(), PORT = process.env.PORT || 4200;
 const PUBLIC_BASE_URL = process.env.PUBLIC_BASE_URL || '';
 app.set('trust proxy', 1); app.use(helmet()); app.use(cors({ credentials: true, origin(origin, done) { if (!origin || (PUBLIC_BASE_URL && origin === PUBLIC_BASE_URL)) return done(null, true); return done(new Error('Origin is not allowed')); } })); app.use(express.json({ limit: '64kb' }));
-app.get('/health', (req, res) => res.json({ status: 'healthy', service: 'payment' }));
+app.get('/health', (req, res) => res.json({ status: 'healthy', service: 'payment', persistence: persistence.enabled ? 'file' : 'memory' }));
 app.get('/config', (req, res) => res.json({ vodafoneCashNumber: process.env.VODAFONE_CASH_NUMBER || '' }));
 app.post('/orders', rateLimit('orders', 10), async (req, res) => { try { const { fullName, phone, email, shippingAddress, city, items } = req.body; if (![fullName, phone, shippingAddress, city].every(value => typeof value === 'string' && value.trim())) return res.status(400).json({ error: 'Customer details are incomplete' }); const itemsSnapshot = await snapshot(items), amountCents = itemsSnapshot.reduce((total, item) => total + item.unitPriceCents * item.quantity, 0), token = newToken(); const order = { orderId: crypto.randomUUID(), status: STATUS.AWAITING, amountCents, currency: 'EGP', items: itemsSnapshot, customer: { fullName: fullName.trim(), phone: phone.trim(), email: typeof email === 'string' ? email.trim() : '', shippingAddress: shippingAddress.trim(), city: city.trim() }, trackingTokenHash: hash(token), auditLog: [], createdAt: stamp(), updatedAt: stamp() }; orders.set(order.orderId, order); notify(order, 'order_created'); res.status(201).json({ ...clientOrder(order), trackingToken: token, vodafoneCashNumber: process.env.VODAFONE_CASH_NUMBER || '' }); } catch (error) { res.status(error.status || 500).json({ error: error.status ? error.message : 'Unable to create order' }); } });
 function customer(req, res, next) { const order = orders.get(req.params.orderId), token = req.get('x-tracking-token') || req.body?.trackingToken; if (!order || !token || !equal(order.trackingTokenHash, hash(token))) return res.status(404).json({ error: 'Order not found' }); req.order = order; next(); }
@@ -107,4 +118,4 @@ app.get('/admin/orders/:orderId/receipt', admin, async (req, res) => { const ord
 app.get('/admin/notifications', admin, (req, res) => res.json({ notifications: [...notifications.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)) }));
 app.post('/admin/notifications/:notificationId/read', admin, csrf, (req, res) => { const note = notifications.get(req.params.notificationId); if (!note) return res.status(404).json({ error: 'Notification not found' }); note.readAt = stamp(); res.json(note); });
 if (require.main === module) { const server = app.listen(PORT, '0.0.0.0', () => console.log(`Payment service on port ${PORT}`)); const stop = () => server.close(() => process.exit(0)); process.on('SIGTERM', stop); process.on('SIGINT', stop); }
-module.exports = app; module.exports._test = { orders, notifications, sessions, hash, newToken, STATUS, verifyPassword };
+module.exports = app; module.exports._test = { orders, notifications, sessions, hash, newToken, STATUS, verifyPassword, persistence, restored };

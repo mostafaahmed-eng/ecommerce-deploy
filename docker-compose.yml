@@ -63,7 +63,13 @@ services:
       ADMIN_SESSION_SECRET: ${ADMIN_SESSION_SECRET:-}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_ADMIN_CHAT_ID: ${TELEGRAM_ADMIN_CHAT_ID:-}
-      RECEIPTS_LOCAL_PATH: /app/uploads
+      RECEIPTS_STORAGE_DRIVER: local
+      RECEIPTS_LOCAL_PATH: /app/uploads/receipts
+      # Durable state: orders, owner sessions and notification index. "local"
+      # writes JSON files into DATA_DIR so a container restart loses nothing.
+      # Set PERSISTENCE_DRIVER=memory to run the services fully stateless.
+      DATA_DIR: /app/data
+      PERSISTENCE_DRIVER: local
       PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-http://localhost:8080}
       EMAIL_NOTIFICATIONS_ENABLED: ${EMAIL_NOTIFICATIONS_ENABLED:-false}
       ORDER_NOTIFICATION_EMAIL: ${ORDER_NOTIFICATION_EMAIL:-}
@@ -75,6 +81,7 @@ services:
       EMAIL_FROM: ${EMAIL_FROM:-}
     volumes:
       - receipts:/app/uploads
+      - payment-data:/app/data
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:4200/health"]
       interval: 10s
@@ -172,3 +179,4 @@ networks:
 
 volumes:
   receipts:
+  payment-data:
