@@ -1,0 +1,268 @@
+# ============================================================================
+# Cost-optimized live demo: EC2 t4g.small + Docker Compose behind Nginx
+# ============================================================================
+#
+# Pipeline shape
+#
+#   pull_request  ->  validate (never deploys)
+#   push to main  ->  validate -> build (GHCR, multi-arch) -> deploy (SSM)
+#   workflow_dispatch -> same as push, but ONLY from refs/heads/main
+#
+# Authentication is GitHub OIDC -> AWS IAM role. There are NO static AWS
+# access keys anywhere in this workflow.
+#
+# Required GitHub configuration (see DEPLOYMENT_SUMMARY.md):
+#   secret  AWS_ROLE_ARN        IAM role trusted by token.actions.githubusercontent.com
+#   var     AWS_REGION          e.g. us-east-1
+#   var     AWS_INSTANCE_ID     instance created by infrastructure/terraform/free-tier-ec2
+#   var     APP_URL             public base URL, e.g. http://1.2.3.4 (optional but recommended)
+
+name: Free-tier live demo
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: free-tier-demo-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1-6. Static validation. Runs for every PR and push, and NEVER deploys.
+  # ---------------------------------------------------------------------------
+  validate:
+    name: validate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Unit and integration tests
+        run: npm test
+
+      - name: JavaScript syntax check
+        run: |
+          set -euo pipefail
+          rc=0
+          while IFS= read -r file; do
+            if ! node --check "$file"; then
+              echo "::error file=$file::syntax error"
+              rc=1
+            fi
+          done < <(find services scripts tests -name '*.js' -not -path '*/node_modules/*')
+          exit $rc
+
+      - name: Shell syntax check
+        run: |
+          set -euo pipefail
+          rc=0
+          while IFS= read -r file; do
+            if ! bash -n "$file"; then
+              echo "::error file=$file::bash syntax error"
+              rc=1
+            fi
+          done < <(find scripts infrastructure -name '*.sh')
+          exit $rc
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+
+      - name: Terraform fmt
+        run: terraform fmt -check -recursive infrastructure/terraform
+
+      - name: Terraform validate (all modules)
+        run: |
+          set -euo pipefail
+          for module in infrastructure/terraform infrastructure/terraform/bootstrap infrastructure/terraform/free-tier-ec2; do
+            echo "==> $module"
+            (cd "$module" && terraform init -backend=false -input=false && terraform validate)
+          done
+
+      - name: Docker Compose config
+        run: |
+          docker compose config --quiet
+          docker compose -f docker-compose.prod.yml --profile monitoring config --quiet
+
+      - name: Nginx configuration test
+        run: |
+          docker run --rm \
+            --add-host frontend:127.0.0.1 --add-host api:127.0.0.1 \
+            -v "$PWD/nginx:/etc/nginx/conf-src:ro" \
+            -v "$PWD/nginx/production.conf:/etc/nginx/nginx.conf:ro" \
+            nginx:1.27-alpine nginx -t
+
+  # ---------------------------------------------------------------------------
+  # 7-9. Multi-arch images (linux/amd64 + linux/arm64) pushed to GHCR.
+  #       ARM64 is required because the demo host is a Graviton t4g.small.
+  # ---------------------------------------------------------------------------
+  build:
+    name: build ${{ matrix.service }}
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [frontend, backend, payment, search, cart, product, api]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Lowercase the image owner (GHCR requires it)
+        id: owner
+        run: echo "name=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: ./services/${{ matrix.service }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ steps.owner.outputs.name }}/ecommerce-${{ matrix.service }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ steps.owner.outputs.name }}/ecommerce-${{ matrix.service }}:latest
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max
+
+  # ---------------------------------------------------------------------------
+  # 10-13. Deploy to the EC2 host over AWS Systems Manager Run Command.
+  #         Absolutely gated to refs/heads/main - PRs can never reach here.
+  # ---------------------------------------------------------------------------
+  deploy:
+    name: deploy via SSM
+    needs: build
+    runs-on: ubuntu-latest
+    # Both conditions must hold: this run is on main, and it is not a PR.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    permissions:
+      id-token: write
+      contents: read
+    concurrency:
+      group: free-tier-demo-production
+      cancel-in-progress: false
+    steps:
+      - name: Checkout (deployment scripts)
+        uses: actions/checkout@v4
+
+      - name: Require a configured AWS region and instance
+        run: |
+          set -euo pipefail
+          missing=""
+          [ -n "${{ vars.AWS_REGION }}" ]        || missing="$missing AWS_REGION"
+          [ -n "${{ vars.AWS_INSTANCE_ID }}" ]    || missing="$missing AWS_INSTANCE_ID"
+          [ -n "${{ secrets.AWS_ROLE_ARN }}" ]    || missing="$missing AWS_ROLE_ARN"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing GitHub configuration:$missing. See DEPLOYMENT_SUMMARY.md#required-github-settings."
+            exit 1
+          fi
+          if [ "${{ github.ref }}" != "refs/heads/main" ]; then
+            echo "::error::Refusing to deploy from ${{ github.ref }} - only refs/heads/main may deploy."
+            exit 1
+          fi
+
+      - name: Configure AWS credentials (GitHub OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Deploy pinned SHA through SSM Run Command
+        id: ssm
+        env:
+          APP_URL: ${{ vars.APP_URL }}
+          INSTANCE_ID: ${{ vars.AWS_INSTANCE_ID }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # No secrets are placed in this command string - only the pinned SHA,
+          # the repository name and non-secret compose settings.
+          cmd="bash /opt/ecommerce/compose/deploy.sh --sha ${SHA} --repo ${REPO} --http-port 80 --https-port 443"
+          if [ -n "${APP_URL}" ]; then
+            cmd="${cmd} --base-url ${APP_URL}"
+          fi
+
+          jq -n --arg c "$cmd" '{commands:[$c]}' > /tmp/ssm-params.json
+
+          echo "Deploying ${SHA} to ${INSTANCE_ID}"
+          command_id=$(aws ssm send-command \
+            --instance-id "${INSTANCE_ID}" \
+            --document-name AWS-RunShellScript \
+            --comment "deploy ${SHA}" \
+            --parameters file:///tmp/ssm-params.json \
+            --query 'Command.CommandId' --output text)
+          echo "command-id=${command_id}" >> "$GITHUB_OUTPUT"
+          echo "SSM command: ${command_id}"
+
+      - name: Wait for the deployment command
+        run: |
+          set -euo pipefail
+          command_id="${{ steps.ssm.outputs.command-id }}"
+          for attempt in $(seq 1 60); do
+            status=$(aws ssm get-command-invocation \
+              --command-id "$command_id" \
+              --instance-id "${{ vars.AWS_INSTANCE_ID }}" \
+              --query 'Status' --output text 2>/dev/null || echo Pending)
+            echo "attempt $attempt: $status"
+            case "$status" in
+              Success) break ;;
+              Failed|Cancelled|TimedOut)
+                echo "::error::SSM deployment command $status"
+                aws ssm get-command-invocation --command-id "$command_id" \
+                  --instance-id "${{ vars.AWS_INSTANCE_ID }}" \
+                  --query '{Status:Status,Stdout:StandardOutputContent,Stderr:StandardErrorContent}' --output json
+                exit 1 ;;
+            esac
+            sleep 10
+          done
+
+      - name: Public smoke tests from the runner
+        if: vars.APP_URL != ''
+        run: |
+          chmod +x scripts/smoke-test.sh
+          ./scripts/smoke-test.sh --base-url "${{ vars.APP_URL }}" --verbose
+
+      - name: Deployment summary
+        if: always()
+        run: |
+          echo "### Free-tier demo deployment" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Ref: \`${{ github.ref }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- SHA: \`${{ github.sha }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Images: \`ghcr.io/<owner>/ecommerce-*\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Deployed through: AWS SSM Run Command (OIDC, no static keys)" >> "$GITHUB_STEP_SUMMARY"
