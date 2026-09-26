@@ -37,6 +37,7 @@ output "iam_role_name" {
 output "ami_id" {
   description = "Resolved Amazon Linux 2023 ARM64 AMI."
   value       = data.aws_ssm_parameter.al2023_arm64.value
+  sensitive   = true
 }
 
 output "parameter_namespace" {
