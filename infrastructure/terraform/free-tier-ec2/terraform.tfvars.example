@@ -7,6 +7,13 @@ environment  = "demo"
 instance_type      = "t4g.small"
 root_volume_size_gb = 20
 
+# T-family burst credit mode. "standard" (the default) is the cost-safe choice:
+# the instance never accrues surplus CPU credits, so sustained CPU above the
+# baseline cannot produce an hourly overage. Use "unlimited" only when you
+# deliberately want sustained burst CPU and accept the per-vCPU-hour charge
+# that applies once burst credits are exhausted.
+cpu_credits = "standard"
+
 # Set an AZ explicitly if your account has restrictions; otherwise the first
 # available AZ in the region is used.
 # availability_zone = "us-east-1a"

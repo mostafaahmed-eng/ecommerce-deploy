@@ -106,7 +106,7 @@ New directory: `infrastructure/terraform/free-tier-ec2/`
 | `networking.tf` | 1 VPC · 1 public subnet · 1 IGW · 1 route table — **no NAT** |
 | `security.tf` | Security group allowing **80/443 only**, **no port 22** |
 | `iam.tf` | Instance role: `AmazonSSMManagedInstanceCore` + read-only `/ecommerce/*`; optional budget + SNS (`count = 0` by default) |
-| `ec2.tf` | `t4g.small` (ARM64), IMDSv2 required (`http_tokens = required`), encrypted **gp3 20 GB** root, AL2023 ARM64 AMI from SSM |
+| `ec2.tf` | `t4g.small` (ARM64), **`cpu_credits = standard`** (no surplus-credit charges), IMDSv2 required (`http_tokens = required`), encrypted **gp3 20 GB** root, AL2023 ARM64 AMI from SSM |
 | `user-data.sh` | Installs Docker CE + Compose v2 plugin, `jq`, AWS CLI, enables `amazon-ssm-agent`, adds `ssm-user` to the `docker` group, adds `ecommerce-health`/`ec-status`/`ec-logs` helpers |
 | `outputs.tf` | `instance_id`, `public_ip`, `application_http_url`, SSM run/teardown instructions |
 | `terraform.tfvars.example` | Safe, documented defaults |
@@ -664,9 +664,11 @@ provides a **T4g free trial** covering up to **750 aggregate instance-hours per
 month of `t4g.small`**, available to new and existing AWS customers, through
 **December 31, 2026**. Regular On-Demand billing starts **January 1, 2027**.
 
-Other resources, surplus CPU credits, network usage, storage, public IPv4 usage
-outside applicable allowances, and usage after the trial may incur charges.
-Eligibility and AWS terms can change.
+Other resources, network usage, storage, public IPv4 usage outside applicable
+allowances, and usage after the trial may incur charges. Eligibility and AWS
+terms can change. Surplus CPU-credit charges are avoided by the profile default
+**`cpu_credits = "standard"`** — using `"unlimited"` re-introduces a per-vCPU-hour
+overage once burst credits run out.
 
 Current trial-period expectation (24/7 in `us-east-1`):
 
@@ -829,6 +831,15 @@ scripts/aws/load-ssm-env.sh --list                 # names only, never values
 # 15. only NOW set ENABLE_FREE_TIER_DEPLOY=true, then push to main
 #     deploy  (push to main, or workflow_dispatch from main only)
 #     skipped unless ENABLE_FREE_TIER_DEPLOY == 'true'
+
+# 16. DIARY THE TEARDOWN DATE - this environment is TEMPORARY.
+#     The AWS Free plan has a hard expiry (~12 days left when written).
+#     Destroy the demo AT LEAST 48 HOURS BEFORE FREE-PLAN EXPIRY unless you
+#     explicitly choose to upgrade and pay:
+#         cd infrastructure/terraform/free-tier-ec2
+#         terraform plan -destroy
+#         terraform destroy
+#     No automatic AWS shutdown/stop was created - you must do this yourself.
 
 # --- optional, requires DNS ------------------------------------------------
 scripts/aws/setup-https.sh example.com admin@example.com
