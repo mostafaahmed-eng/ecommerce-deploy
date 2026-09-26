@@ -227,6 +227,51 @@ Two related guard rails:
 
 ---
 
+### 4b. Least-privilege deployment role (`AWS_FREE_TIER_ROLE_ARN`)
+
+This workflow does **not** use the broad legacy role. It assumes its own role,
+`<project>-github-actions-free-tier`, exposed as the Actions secret
+**`AWS_FREE_TIER_ROLE_ARN`** (bootstrap output `free_tier_role_arn`).
+
+The complete AWS API surface of `deploy-free-tier.yml` is three calls, and the
+policy is derived from exactly that:
+
+| Call in the workflow | Action | Resource scope |
+| --- | --- | --- |
+| `aws-actions/configure-aws-credentials` | `sts:AssumeRoleWithWebIdentity` | trust policy only: `repo:mostafaahmed-eng/ecommerce-deploy` + `ref:refs/heads/main` + aud `sts.amazonaws.com` |
+| `aws ssm send-command --document-name AWS-RunShellScript --instance-id …` | `ssm:SendCommand` | **both** `arn:aws:ssm:<region>:<acct>:document/AWS-RunShellScript` **and** `arn:aws:ec2:<region>:<acct>:instance/<AWS_INSTANCE_ID>` |
+| `aws ssm get-command-invocation …` (poll, up to 60 attempts) | `ssm:GetCommandInvocation` | `Resource = "*"` — required, see below |
+
+**Not granted:** `PowerUserAccess`, `AdministratorAccess`, `iam:*`, `ec2:*`,
+`s3:*`, `ssm:*`. The GHCR image push uses `GITHUB_TOKEN` and touches no AWS
+API, so it needs no IAM permission at all.
+
+**Why `Resource = "*"` on `ssm:GetCommandInvocation`:** AWS's Service
+Authorization Reference for Systems Manager does not publish a resource type
+for this action, i.e. it does not support resource-level permissions, so a
+policy that omits `Resource "*"` simply denies it and the deployment poll loop
+breaks. It therefore cannot be narrowed to the instance or the document.
+Residual risk: a caller holding some other valid `CommandId` could read that
+command's output — but this role cannot create a command against anything other
+than the single instance above.
+
+> [!WARNING]
+> The Service Authorization Reference page could not be reached from the build
+> environment used to author this change. **Re-confirm the resource-level
+> support for `ssm:GetCommandInvocation` before the first `terraform apply`.**
+
+**Fail-closed default:** `var.free_tier_instance_id` is `null` until you set it
+to the demo instance. While it is null the `ssm:SendCommand` statement only
+matches a placeholder that is not a real instance ID, so the role cannot target
+anything.
+
+**Separation from the legacy profile:** `ci-cd.yml` uses the distinct secret
+`AWS_LEGACY_ROLE_ARN`, which carries `PowerUserAccess` for its manual
+`terraform apply` path. Neither workflow references the other's secret, and the
+free-tier role has no path to `PowerUserAccess`.
+
+---
+
 ## 5. Budget and spending alerts
 
 ### 5a. CLI (fastest, works without touching Terraform)
@@ -373,4 +418,4 @@ reference it — check before deleting.
 | SSM Run Command deployment end to end | **Requires AWS** |
 | Budget alert delivery | **Requires AWS** + inbox confirmation |
 | Let's Encrypt issuance | **Requires DNS** pointing at the instance |
-| GitHub OIDC role assumption | **Requires GitHub configuration** (`AWS_ROLE_ARN`, `AWS_REGION`, `AWS_INSTANCE_ID`) |
+| GitHub OIDC role assumption | **Requires GitHub configuration** (`AWS_FREE_TIER_ROLE_ARN`, `AWS_REGION`, `AWS_INSTANCE_ID`) |

@@ -426,7 +426,8 @@ portfolio/reference purposes, behind that single manual gate.
 
 | Kind | Name | Required | Purpose |
 | --- | --- | --- | --- |
-| **Secret** | `AWS_ROLE_ARN` | yes | IAM role assumed via GitHub OIDC |
+| **Secret** | `AWS_FREE_TIER_ROLE_ARN` | yes | Least-privilege role **this** workflow assumes via GitHub OIDC (bootstrap output `free_tier_role_arn`) |
+| **Secret** | `AWS_LEGACY_ROLE_ARN` | legacy profile only | Broad role used **only** by `ci-cd.yml`'s manual ECS jobs (bootstrap output `legacy_role_arn`) |
 | **Variable** | `AWS_REGION` | yes | Region for `configure-aws-credentials` |
 | **Variable** | `AWS_INSTANCE_ID` | yes | `--instance-id` for SSM Run Command |
 | **Variable** | `APP_URL` | recommended | Base URL for the post-deploy public smoke test |
@@ -442,6 +443,22 @@ SSM` job is **SKIPPED**:
 | --- | --- | --- |
 | unset (current), `false`, or anything but `true` | runs | **skipped** |
 | `true` | runs | permitted on `refs/heads/main` |
+
+**The two profiles use different roles and never share one.**
+
+| Profile | Workflow | Secret | Role | Grant |
+| --- | --- | --- | --- | --- |
+| B — free-tier | `deploy-free-tier.yml` | `AWS_FREE_TIER_ROLE_ARN` | `<project>-github-actions-free-tier` | `ssm:SendCommand` on `AWS-RunShellScript` + one instance, and `ssm:GetCommandInvocation` |
+| A — legacy ECS | `ci-cd.yml` | `AWS_LEGACY_ROLE_ARN` | `<project>-github-actions-legacy` | AWS `PowerUserAccess` + IAM on `<project>-*` roles |
+
+`PowerUserAccess`, `AdministratorAccess`, `iam:*`, `ec2:*`, `s3:*` and `ssm:*`
+are **not** granted to the free-tier role. The only wildcard is
+`Resource: "*"` on `ssm:GetCommandInvocation`, which AWS does not expose with a
+resource type, so it cannot be narrowed — see
+`infrastructure/terraform/bootstrap/main.tf` for the full reasoning. Both roles
+share one account-level OIDC provider and the same trust conditions:
+`repo:mostafaahmed-eng/ecommerce-deploy` + `ref:refs/heads/main` +
+audience `sts.amazonaws.com`, so a `pull_request` run can assume neither.
 
 **`TF_STATE_BUCKET` is not used by this workflow.** The new profile keeps
 Terraform state local by default, so the variable is unnecessary — but the
@@ -761,7 +778,8 @@ terraform plan -var='create_budget=true' -var='budget_email=you@example.com'
 scripts/aws/load-ssm-env.sh --list        # names only
 
 # 3. GitHub settings  (requires GitHub)
-#    secret  AWS_ROLE_ARN
+#    secrets AWS_FREE_TIER_ROLE_ARN  (free-tier, least privilege)
+#            AWS_LEGACY_ROLE_ARN     (legacy ECS, manual-only, broad)
 #    vars    AWS_REGION, AWS_INSTANCE_ID, APP_URL
 #    var     ENABLE_FREE_TIER_DEPLOY = 'true'   <- deployment gate; unset means
 #                                                  AWS deploy stays DISABLED
