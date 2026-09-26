@@ -1,4 +1,49 @@
+# ---------------------------------------------------------------------------
+# FREE-TIER LIVE DEMO (the default path)
+#
+# With these values the bootstrap creates ONLY:
+#   - the account-level GitHub OIDC provider, if one does not already exist
+#   - the free-tier GitHub Actions IAM role
+#   - the free-tier least-privilege SSM policy
+#
+# and creates NONE of PowerUserAccess / legacy ECS role / S3 state bucket.
+# ---------------------------------------------------------------------------
 aws_region        = "us-east-1"
 project_name      = "ecommerce-demo"
 github_repository = "mostafaahmed-eng/ecommerce-deploy"
 deploy_branch     = "main"
+
+enable_legacy_ecs_role = false
+create_state_bucket     = false
+
+# ---------------------------------------------------------------------------
+# Populate AFTER the EC2 instance from infrastructure/terraform/free-tier-ec2
+# exists (use its instance_id output). While it is null the free-tier role is
+# fail-closed and cannot send any command. Same value as the GitHub Actions
+# variable AWS_INSTANCE_ID.
+# ---------------------------------------------------------------------------
+# free_tier_instance_id = "i-0123456789abcdef0"
+
+# ---------------------------------------------------------------------------
+# Case 2 only: set this when the account ALREADY has a
+# token.actions.githubusercontent.com OIDC provider, so Terraform references it
+# instead of trying to create a duplicate. Otherwise leave it null (default)
+# and let Terraform create it.
+# ---------------------------------------------------------------------------
+# github_oidc_provider_arn = "arn:aws:iam::123456789012:oidc-provider/token.actions.githubusercontent.com"
+
+# ---------------------------------------------------------------------------
+# OPTIONAL, unrelated to the live demo.
+#
+#   enable_legacy_ecs_role = true
+#       Creates the broad legacy ECS role + PowerUserAccess attachment.
+#       Only needed if you intend to run the legacy ECS profile's manual
+#       `terraform apply` (ci-cd.yml, workflow_dispatch + deploy_legacy_ecs).
+#
+#   create_state_bucket = true
+#       Creates the optional S3 Terraform remote-state bucket. Not needed for
+#       the demo: the free-tier EC2 module keeps state locally by default.
+# ---------------------------------------------------------------------------
+# enable_legacy_ecs_role = true
+# create_state_bucket    = true
+# state_bucket_name      = "ecommerce-demo-tfstate-123456789012"

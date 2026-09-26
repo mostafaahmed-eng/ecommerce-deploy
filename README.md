@@ -169,18 +169,65 @@ terraform apply bootstrap.tfplan
 terraform output
 ```
 
-The bootstrap creates:
+With **default variables** the bootstrap creates only what the free-tier live
+demo needs:
 
-- A private, encrypted, versioned S3 Terraform-state bucket.
-- A GitHub OIDC trust limited to `mostafaahmed-eng/ecommerce-deploy` on the `main` branch.
-- A deployment role with AWS `PowerUserAccess` plus IAM access limited to project-prefixed roles.
+- The account-level GitHub OIDC provider — and only if one does not already
+  exist — trusting only `mostafaahmed-eng/ecommerce-deploy` on the `main`
+  branch with audience `sts.amazonaws.com`.
+- The free-tier GitHub Actions IAM role and its least-privilege SSM policy.
 
-If the AWS account already contains the GitHub OIDC provider, import it instead of creating a duplicate:
+It does **not** create `PowerUserAccess`, the legacy ECS role, or an S3 state
+bucket unless you opt in:
+
+| Terraform resource | Created by default? | Enable with |
+| --- | --- | --- |
+| `aws_iam_openid_connect_provider.github` | only if absent | — (or set `github_oidc_provider_arn`) |
+| `aws_iam_role.free_tier` + `aws_iam_policy.free_tier_ssm_deploy` | **yes** | always |
+| `aws_s3_bucket.state` + versioning + SSE + public-access-block | **no** | `create_state_bucket = true` |
+| `aws_iam_role.legacy_ecs` + `aws_iam_role_policy_attachment.legacy_power_user` + `aws_iam_role_policy.legacy_manage_project_roles` | **no** | `enable_legacy_ecs_role = true` |
+
+| Terraform resource | IAM role name | Output → Actions secret | Permissions |
+| --- | --- | --- | --- |
+| `aws_iam_role.legacy_ecs` *(opt-in)* | `<project>-github-actions-legacy` | `legacy_role_arn` → **`AWS_LEGACY_ROLE_ARN`** | AWS `PowerUserAccess` plus IAM restricted to `<project>-*` roles. Consumed only by the manual-only legacy ECS profile. |
+| `aws_iam_role.free_tier` *(always)* | `<project>-github-actions-free-tier` | `free_tier_role_arn` → **`AWS_FREE_TIER_ROLE_ARN`** | `ssm:SendCommand` on `AWS-RunShellScript` for a single instance, plus `ssm:GetCommandInvocation`. |
+
+`PowerUserAccess` is granted in exactly one place in this repository — the
+legacy role — and only when `enable_legacy_ecs_role = true`.
+`deploy-free-tier.yml` never references it. There is deliberately no generic
+`github_actions_role_arn` output any more, and `legacy_role_arn` /
+`state_bucket_name` evaluate to **null** while their resources are disabled.
+
+> [!IMPORTANT]
+> **Profile A (legacy ECS) is optional and unrelated to the live demo.** The
+> demo has its own sequence — §9 of
+> [`docs/AWS_FREE_TIER_DEPLOYMENT.md`](docs/AWS_FREE_TIER_DEPLOYMENT.md) — in
+> which you apply the **free-tier EC2 profile first**, then run the bootstrap
+> with `free_tier_instance_id = "<instance-id>"`,
+> `enable_legacy_ecs_role = false` and `create_state_bucket = false`.
+
+If the AWS account already contains the GitHub OIDC provider, do **not** create
+a duplicate. Either reference it from `terraform.tfvars`:
+
+```hcl
+github_oidc_provider_arn = "arn:aws:iam::ACCOUNT_ID:oidc-provider/token.actions.githubusercontent.com"
+```
+
+…or import it into this configuration instead:
 
 ```bash
-terraform import aws_iam_openid_connect_provider.github \
+terraform import 'aws_iam_openid_connect_provider.github[0]' \
   arn:aws:iam::ACCOUNT_ID:oidc-provider/token.actions.githubusercontent.com
 ```
+
+Use exactly one of the two approaches. Set `free_tier_instance_id` **after** the
+demo instance exists (the same value as the `AWS_INSTANCE_ID` Actions variable);
+while it is left null the free-tier role is **fail-closed** and cannot send any
+command.
+
+> [!NOTE]
+> Nothing in this section has been applied. The bootstrap is design-only until
+> the AWS phase is explicitly opened.
 
 ### 3. Configure GitHub
 
@@ -188,8 +235,8 @@ In the repository settings, add these Actions secrets:
 
 | Name | Value |
 | --- | --- |
-| `AWS_ROLE_ARN` | `github_actions_role_arn` from bootstrap output |
-| `TF_STATE_BUCKET` | `state_bucket_name` from bootstrap output |
+| `AWS_LEGACY_ROLE_ARN` | `legacy_role_arn` from bootstrap output — legacy ECS profile only |
+| `TF_STATE_BUCKET` | `state_bucket_name` from bootstrap output — requires `create_state_bucket = true`; **not needed for the free-tier demo** |
 | `PAYMENT_SECRETS_ARN` | ARN of the pre-created Secrets Manager JSON secret for payment/admin/email settings |
 
 Optionally add the Actions variable `AWS_REGION`; it defaults to `us-east-1`.
@@ -304,7 +351,7 @@ rename. Secret values are never printed and the file is git-ignored. See the
 
 | Kind | Name | Required | Purpose |
 | --- | --- | --- | --- |
-| Secret | `AWS_ROLE_ARN` | yes | IAM role assumed through GitHub OIDC |
+| Secret | `AWS_FREE_TIER_ROLE_ARN` | yes | Least-privilege IAM role assumed through GitHub OIDC |
 | Variable | `AWS_REGION` | yes | Region for `configure-aws-credentials` |
 | Variable | `AWS_INSTANCE_ID` | yes | Target for SSM Run Command |
 | Variable | `APP_URL` | recommended | Base URL for the post-deploy smoke test |
@@ -417,8 +464,8 @@ the instance — export anything you want to keep first.
 
 | Profile | Workflow | Secrets | Variables |
 | --- | --- | --- | --- |
-| A — ECS | `ci-cd.yml` | `AWS_ROLE_ARN`, `TF_STATE_BUCKET`, `PAYMENT_SECRETS_ARN` | `AWS_REGION`, `PUBLIC_DOMAIN_NAME`, `ROUTE53_ZONE_ID` |
-| B — EC2 | `deploy-free-tier.yml` | `AWS_ROLE_ARN` | `AWS_REGION`, `AWS_INSTANCE_ID`, `APP_URL`, `ENABLE_FREE_TIER_DEPLOY` |
+| A — ECS | `ci-cd.yml` | `AWS_LEGACY_ROLE_ARN`, `TF_STATE_BUCKET`, `PAYMENT_SECRETS_ARN` | `AWS_REGION`, `PUBLIC_DOMAIN_NAME`, `ROUTE53_ZONE_ID` |
+| B — EC2 | `deploy-free-tier.yml` | `AWS_FREE_TIER_ROLE_ARN` | `AWS_REGION`, `AWS_INSTANCE_ID`, `APP_URL`, `ENABLE_FREE_TIER_DEPLOY` |
 
 Deployment gates:
 
@@ -436,6 +483,12 @@ Deployment gates:
   `deploy_legacy_ecs = true`. A normal merge or push to `main` cannot run
   `terraform apply` or deploy ECS. The legacy ECS code stays in the repository
   for portfolio/reference purposes.
+- **Role separation.** Profile A assumes only `AWS_LEGACY_ROLE_ARN` (broad, for
+  the manual `terraform apply` path); Profile B assumes only
+  `AWS_FREE_TIER_ROLE_ARN`, whose entire policy is `ssm:SendCommand` on
+  `AWS-RunShellScript` for one instance plus `ssm:GetCommandInvocation`.
+  Neither workflow references the other profile's secret, and `PowerUserAccess`
+  exists on the legacy role alone.
 
 Pull requests validate and build images with `push: false` — no GHCR login, no
 `packages: write`, no `:latest`. GitHub OIDC is used by both profiles; no

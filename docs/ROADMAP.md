@@ -21,7 +21,7 @@ This roadmap converts the original DEPI learning plan into verifiable repository
 
 - [ ] Run the full Docker Compose stack on a Docker-enabled workstation
 - [ ] Bootstrap the selected AWS account and confirm the target region
-- [ ] Configure `AWS_ROLE_ARN` and `TF_STATE_BUCKET` in GitHub
+- [ ] Configure `AWS_FREE_TIER_ROLE_ARN`, `AWS_LEGACY_ROLE_ARN` and `TF_STATE_BUCKET` in GitHub
 - [ ] Protect the `main` branch and `production` environment
 - [ ] Merge the deployment branch and verify the first ECS rollout
 - [ ] Record the application URL and baseline monthly cost

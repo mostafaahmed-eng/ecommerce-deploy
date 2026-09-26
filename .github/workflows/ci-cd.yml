@@ -11,6 +11,11 @@ name: CI and AWS Deploy
 # The legacy ECS/ECR production profile is MANUAL ONLY. It is preserved for
 # portfolio/reference purposes, but a normal merge or push to main can never
 # provision ECR, push ECR images, run `terraform apply` or deploy to ECS.
+#
+# AWS credentials for these jobs come from the BROAD legacy profile role,
+# exposed as the Actions secret AWS_LEGACY_ROLE_ARN. The free-tier profile has
+# its own separate, least-privilege secret AWS_FREE_TIER_ROLE_ARN and must
+# never assume the legacy role.
 # ---------------------------------------------------------------------------
 on:
   pull_request:
@@ -93,7 +98,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_LEGACY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - uses: hashicorp/setup-terraform@v3
@@ -144,7 +149,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_LEGACY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - id: login-ecr
@@ -182,7 +187,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_LEGACY_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - uses: hashicorp/setup-terraform@v3

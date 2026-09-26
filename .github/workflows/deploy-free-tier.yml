@@ -22,7 +22,10 @@
 # access keys anywhere in this workflow.
 #
 # Required GitHub configuration (see DEPLOYMENT_SUMMARY.md):
-#   secret  AWS_ROLE_ARN            IAM role trusted by token.actions.githubusercontent.com
+#   secret  AWS_FREE_TIER_ROLE_ARN  least-privilege IAM role (ssm:SendCommand on
+#                                   AWS-RunShellScript for ONE instance, plus
+#                                   ssm:GetCommandInvocation). This workflow must
+#                                   NEVER use AWS_LEGACY_ROLE_ARN or PowerUserAccess.
 #   var     AWS_REGION              e.g. us-east-1
 #   var     AWS_INSTANCE_ID         instance created by infrastructure/terraform/free-tier-ec2
 #   var     APP_URL                 public base URL, e.g. http://1.2.3.4 (optional but recommended)
@@ -239,7 +242,7 @@ jobs:
           missing=""
           [ -n "${{ vars.AWS_REGION }}" ]        || missing="$missing AWS_REGION"
           [ -n "${{ vars.AWS_INSTANCE_ID }}" ]    || missing="$missing AWS_INSTANCE_ID"
-          [ -n "${{ secrets.AWS_ROLE_ARN }}" ]    || missing="$missing AWS_ROLE_ARN"
+          [ -n "${{ secrets.AWS_FREE_TIER_ROLE_ARN }}" ] || missing="$missing AWS_FREE_TIER_ROLE_ARN"
           if [ -n "$missing" ]; then
             echo "::error::Missing GitHub configuration:$missing. See DEPLOYMENT_SUMMARY.md#required-github-settings."
             exit 1
@@ -252,7 +255,7 @@ jobs:
       - name: Configure AWS credentials (GitHub OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ secrets.AWS_FREE_TIER_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Deploy pinned SHA through SSM Run Command

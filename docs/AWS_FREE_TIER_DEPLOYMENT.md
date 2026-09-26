@@ -227,6 +227,48 @@ Two related guard rails:
 
 ---
 
+### 4b. Least-privilege deployment role (`AWS_FREE_TIER_ROLE_ARN`)
+
+This workflow does **not** use the broad legacy role. It assumes its own role,
+`<project>-github-actions-free-tier`, exposed as the Actions secret
+**`AWS_FREE_TIER_ROLE_ARN`** (bootstrap output `free_tier_role_arn`).
+
+The complete AWS API surface of `deploy-free-tier.yml` is three calls, and the
+policy is derived from exactly that:
+
+| Call in the workflow | Action | Resource scope |
+| --- | --- | --- |
+| `aws-actions/configure-aws-credentials` | `sts:AssumeRoleWithWebIdentity` | trust policy only: `repo:mostafaahmed-eng/ecommerce-deploy` + `ref:refs/heads/main` + aud `sts.amazonaws.com` |
+| `aws ssm send-command --document-name AWS-RunShellScript --instance-id …` | `ssm:SendCommand` | **both** `arn:aws:ssm:<region>:<acct>:document/AWS-RunShellScript` **and** `arn:aws:ec2:<region>:<acct>:instance/<AWS_INSTANCE_ID>` |
+| `aws ssm get-command-invocation …` (poll, up to 60 attempts) | `ssm:GetCommandInvocation` | `Resource = "*"` — required, see below |
+
+**Not granted:** `PowerUserAccess`, `AdministratorAccess`, `iam:*`, `ec2:*`,
+`s3:*`, `ssm:*`. The GHCR image push uses `GITHUB_TOKEN` and touches no AWS
+API, so it needs no IAM permission at all.
+
+**Why `Resource = "*"` on `ssm:GetCommandInvocation`:** **Confirmed** against
+the AWS Systems Manager Service Authorization Reference — `GetCommandInvocation`
+exposes no resource type, i.e. it does not support resource-level permissions,
+so a policy that omits `Resource "*"` simply denies it and the deployment poll
+loop breaks. It therefore cannot be narrowed to the instance or the document.
+`SendCommand`, by contrast, *does* support resource-level permissions and stays
+scoped to `AWS-RunShellScript` plus the single EC2 instance.
+Residual risk: a caller holding some other valid `CommandId` could read that
+command's output — but this role cannot create a command against anything other
+than the single instance above.
+
+**Fail-closed default:** `var.free_tier_instance_id` is `null` until you set it
+to the demo instance. While it is null the `ssm:SendCommand` statement only
+matches a placeholder that is not a real instance ID, so the role cannot target
+anything.
+
+**Separation from the legacy profile:** `ci-cd.yml` uses the distinct secret
+`AWS_LEGACY_ROLE_ARN`, which carries `PowerUserAccess` for its manual
+`terraform apply` path. Neither workflow references the other's secret, and the
+free-tier role has no path to `PowerUserAccess`.
+
+---
+
 ## 5. Budget and spending alerts
 
 ### 5a. CLI (fastest, works without touching Terraform)
@@ -373,4 +415,62 @@ reference it — check before deleting.
 | SSM Run Command deployment end to end | **Requires AWS** |
 | Budget alert delivery | **Requires AWS** + inbox confirmation |
 | Let's Encrypt issuance | **Requires DNS** pointing at the instance |
-| GitHub OIDC role assumption | **Requires GitHub configuration** (`AWS_ROLE_ARN`, `AWS_REGION`, `AWS_INSTANCE_ID`) |
+| GitHub OIDC role assumption | **Requires GitHub configuration** (`AWS_FREE_TIER_ROLE_ARN`, `AWS_REGION`, `AWS_INSTANCE_ID`) |
+
+---
+
+## 9. End-to-end deployment order (AWS phase)
+
+Follow these steps **in order**. `ENABLE_FREE_TIER_DEPLOY` stays disabled until
+step 15.
+
+1. Merge the security PR.
+2. Authenticate locally to AWS (`aws configure` / `aws sso login`, then confirm
+   with `aws sts get-caller-identity`).
+3. `terraform plan` the free-tier EC2 profile
+   (`infrastructure/terraform/free-tier-ec2`).
+4. Review cost and the complete resource list.
+5. `terraform apply` the free-tier EC2 profile.
+6. Obtain `instance_id` from that module's output.
+7. Verify the instance appears as an SSM managed node
+   (`aws ssm describe-instance-information` shows the ID as `PingStatus=Online`).
+8. Run the bootstrap plan with all three set:
+
+   | Variable | Value |
+   | --- | --- |
+   | `free_tier_instance_id` | `"<instance-id>"` |
+   | `enable_legacy_ecs_role` | `false` |
+   | `create_state_bucket` | `false` |
+
+9. Review the bootstrap plan. With those defaults it must contain **only** the
+   account OIDC provider (if none exists yet), the free-tier IAM role and its
+   policy — **no `PowerUserAccess`, no legacy role, no S3 bucket.**
+10. Apply the bootstrap.
+11. Put the production application values into the `/ecommerce/*` SSM Parameter
+    Store keys (§6).
+12. Configure GitHub:
+    - **secret** `AWS_FREE_TIER_ROLE_ARN` ← bootstrap output `free_tier_role_arn`
+    - **variable** `AWS_REGION`
+    - **variable** `AWS_INSTANCE_ID`
+    - **variable** `APP_URL`
+13. Keep `ENABLE_FREE_TIER_DEPLOY` **disabled** (leave it unset).
+14. Perform a manual OIDC/SSM connectivity test — prove the trust policy and the
+    least-privilege policy actually work before enabling anything.
+15. Only then set `ENABLE_FREE_TIER_DEPLOY=true`.
+
+### Legacy ECS setup — optional and unrelated to the live demo
+
+The legacy ECS profile shares nothing with the demo above and is **never**
+required to run the free-tier deployment. It is opt-in end to end:
+
+- `enable_legacy_ecs_role = true` in the bootstrap creates the broad
+  `AWS_LEGACY_ROLE_ARN` role. This is the **only** place `PowerUserAccess`
+  exists in this repository, and it does not exist unless you ask for it.
+- `create_state_bucket = true` only if you want the optional remote-state
+  bucket the legacy ECS backend can use. The demo keeps Terraform state local.
+- Separate GitHub settings: secret `AWS_LEGACY_ROLE_ARN`, secret
+  `TF_STATE_BUCKET`, variables `AWS_REGION` / `PUBLIC_DOMAIN_NAME` /
+  `ROUTE53_ZONE_ID`.
+- It can only be triggered by `workflow_dispatch` from `refs/heads/main` with
+  the boolean input `deploy_legacy_ecs = true`. A normal merge or push to
+  `main` never runs it.
