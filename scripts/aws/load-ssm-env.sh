@@ -97,6 +97,7 @@ render() {
     | gsub("[^a-z0-9]+"; "_")
     | gsub("^_+"; "")
     | gsub("_+$"; "")
+    | ascii_upcase
   ' "$RAW" | sort -u
 }
 
@@ -129,6 +130,16 @@ TMP_FILE="$(mktemp "$(dirname "$OUTPUT_FILE")/.env.production.XXXXXX")"
   #
   # which made this generator exit 5, leaving .env.production unwritten and the
   # deploy failing with "SSM parameter load failed". Reproduced against jq-1.8.1.
+  #
+  # The final ascii_upcase implements the documented naming rule
+  # (docs/AWS_FREE_TIER_DEPLOYMENT.md#parameter-store):
+  #
+  #   /ecommerce/public-base-url  ->  PUBLIC_BASE_URL
+  #
+  # It must run AFTER the gsub sanitisation, because gsub only tolerates the
+  # lower-case class. Without it the file was written as `public_base_url=...`,
+  # so deploy.sh's `grep -E '^PUBLIC_BASE_URL='` matched nothing and the
+  # containers received no configuration at all.
   jq -r --arg prefix "$PREFIX" '
     .Parameters[]
     | . as $p
@@ -139,7 +150,8 @@ TMP_FILE="$(mktemp "$(dirname "$OUTPUT_FILE")/.env.production.XXXXXX")"
                 | gsub("^_+"; "")
                 | gsub("_+$"; "")
       ) as $key
-    | "\($key)=\($p.Value | tostring)"
+    | ($key | ascii_upcase) as $envkey
+    | "\($envkey)=\($p.Value | tostring)"
   ' "$RAW"
 } > "$TMP_FILE"
 
