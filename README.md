@@ -294,11 +294,12 @@ Full rationale, cost tables and the pre-apply checklist live in
 > billing starts **January 1, 2027**.
 
 > [!CAUTION]
-> **Nothing here guarantees a $0 bill.** Other resources, surplus CPU credits,
-> network usage, storage, public IPv4 usage outside applicable allowances, and
-> usage after the trial may incur charges. Eligibility and AWS terms can
-> change — confirm the current offer before you rely on it. Enable the budget
-> alert on the very first apply.
+> **Nothing here guarantees a $0 bill.** Other resources, network usage,
+> storage, public IPv4 usage outside applicable allowances, and usage after the
+> trial may incur charges. Eligibility and AWS terms can change — confirm the
+> current offer before you rely on it. Enable the budget alert on the very first
+> apply. Surplus CPU-credit charges are avoided by the profile default
+> `cpu_credits = "standard"`; switching to `"unlimited"` re-introduces them.
 
 ### Run the production stack locally first
 

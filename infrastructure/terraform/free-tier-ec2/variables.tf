@@ -79,6 +79,17 @@ variable "root_volume_throughput" {
   default     = 125
 }
 
+variable "cpu_credits" {
+  type        = string
+  default     = "standard"
+  description = "T-family CPU credit mode. Standard is the cost-safe default."
+
+  validation {
+    condition     = contains(["standard", "unlimited"], var.cpu_credits)
+    error_message = "cpu_credits must be standard or unlimited."
+  }
+}
+
 variable "allowed_http_cidrs" {
   description = "CIDRs allowed to reach the instance on ports 80/443. Keep 0.0.0.0/0 for a public demo site."
   type        = list(string)

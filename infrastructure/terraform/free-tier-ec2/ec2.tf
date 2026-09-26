@@ -40,8 +40,13 @@ resource "aws_instance" "demo" {
 
   # AL2023 enables chrony by default; keeping it explicit documents that NTP is
   # available for TLS validity without opening additional ingress.
+  # "standard" means the instance earns and spends burst credits only, and
+  # never accrues surplus CPU-credit charges. On "unlimited", sustained CPU
+  # above the baseline bills $0.05 per vCPU-hour once burst credits run out,
+  # which is exactly the surprise charge this profile is designed to avoid.
+  # Flip to "unlimited" only if you deliberately need sustained burst CPU.
   credit_specification {
-    cpu_credits = "unlimited"
+    cpu_credits = var.cpu_credits
   }
 
   tags = {

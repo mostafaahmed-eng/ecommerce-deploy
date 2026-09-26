@@ -70,9 +70,12 @@ everything other than trial-covered compute ≈ $5.25 / month
 
 Charges that can appear **on top of** the trial:
 
-- **CPU credits.** `t4g` instances accumulate and spend **surplus CPU credits**.
-  Sustained CPU usage above the baseline can create charges, and credits
-  purchased/expired outside the trial are billable.
+- **CPU credits.** This profile sets **`cpu_credits = "standard"`** (the new
+  default), so the instance earns and spends burst credits only and **cannot
+  accrue surplus CPU-credit charges**. If you deliberately switch to
+  `cpu_credits = "unlimited"`, sustained CPU above the baseline bills per
+  vCPU-hour once burst credits are exhausted — that overage is billable and is
+  **not** covered by the T4g trial.
 - **Network / data transfer** beyond the free-tier allowances.
 - **Storage** (EBS, snapshots, any future S3) beyond its own allowances.
 - **Public IPv4 usage** outside applicable allowances.
@@ -130,8 +133,10 @@ bill for compute or the public IPv4 address.
 3. **The trial covers compute only.** Free-tier allowances and the T4g trial do
    not cover data transfer, public IPv4 addresses outside applicable
    allowances, ECR storage, CloudWatch Logs ingestion or Route 53 hosted zones
-   beyond their own allowances, and **surplus CPU credits** on `t4g` are a
-   separate, billable item.
+   beyond their own allowances. **Surplus CPU credits** on `t4g` are a separate,
+   billable item — avoided here because the profile defaults to
+   `cpu_credits = "standard"`, and re-introduced the moment you opt into
+   `cpu_credits = "unlimited"`.
 4. **Prices change.** gp3, EBS snapshots, public IPv4 and data transfer have
    all been repriced in recent years, and AWS free-tier/trial terms change too.
    Treat every figure above as an estimate and re-confirm the offer.
@@ -402,6 +407,36 @@ The optional budget, if enabled, is account-level and is removed by the same
 `terraform destroy`. The SNS topic may be left behind if other budgets still
 reference it — check before deleting.
 
+### 7a. Free-plan expiry safety (temporary environment)
+
+> [!CAUTION]
+> **This environment is temporary.** The AWS account is on a time-limited Free
+> plan (approximately **12 days remaining** at the time of writing). Nothing in
+> this demo is meant to outlive it.
+
+- **Destroy the demo before the Free plan expires** unless you explicitly
+  choose to upgrade and start paying for it.
+- **Recommended teardown target: at least 48 hours before Free-plan expiry.**
+  Two days of slack covers retries, a failed destroy, or a state-file problem
+  without pushing you past the deadline.
+- Compute, public IPv4 and EBS all bill once the free allowance is gone —
+  leaving a forgotten `t4g.small` running past expiry is exactly how a
+  portfolio demo turns into an unexpected card charge.
+- Set yourself a personal reminder now; **no AWS scheduled action, EventBridge
+  rule or budget-triggered shutdown was created for this**, deliberately — an
+  automated stop/destroy in your account would be an unreviewed, billable
+  account-level control.
+- To tear down:
+
+  ```bash
+  cd infrastructure/terraform/free-tier-ec2
+  terraform plan -destroy
+  terraform destroy
+  ```
+
+  **Do not run `terraform destroy` now** — it is documented here for the
+  teardown day only.
+
 ---
 
 ## 8. What was verified locally vs. what still needs AWS
@@ -429,7 +464,9 @@ step 15.
    with `aws sts get-caller-identity`).
 3. `terraform plan` the free-tier EC2 profile
    (`infrastructure/terraform/free-tier-ec2`).
-4. Review cost and the complete resource list.
+4. Review cost and the complete resource list. Confirm the plan shows
+   **`cpu_credits: "standard"`** (cost-safe default) and that no NAT gateway,
+   load balancer, Elastic IP or port-22 rule appears.
 5. `terraform apply` the free-tier EC2 profile.
 6. Obtain `instance_id` from that module's output.
 7. Verify the instance appears as an SSM managed node
@@ -457,6 +494,10 @@ step 15.
 14. Perform a manual OIDC/SSM connectivity test — prove the trust policy and the
     least-privilege policy actually work before enabling anything.
 15. Only then set `ENABLE_FREE_TIER_DEPLOY=true`.
+16. **Diary the teardown date.** This environment is temporary — see §7a.
+    Destroy the demo **at least 48 hours before the AWS Free plan expires**
+    (`terraform destroy`, documented in §7a) unless you explicitly choose to
+    upgrade and pay. Do this yourself; no automatic AWS shutdown was created.
 
 ### Legacy ECS setup — optional and unrelated to the live demo
 
