@@ -84,7 +84,17 @@ locals {
     "arn:aws:ec2:${var.aws_region}:${local.account_id}:instance/${var.free_tier_instance_id}"
   )
 
-  free_tier_ssm_document_arn = "arn:aws:ssm:${var.aws_region}:${local.account_id}:document/AWS-RunShellScript"
+  # AWS-owned SSM documents have an ARN with an EMPTY account-id field:
+  #
+  #   arn:aws:ssm:<region>::document/AWS-RunShellScript
+  #
+  # Confirmed against the live error, which named that exact ARN:
+  #   not authorized to perform: ssm:SendCommand on resource:
+  #   arn:aws:ssm:us-east-1::document/AWS-RunShellScript
+  #
+  # Inserting the account id produces an ARN that matches nothing, so the
+  # SendCommand statement silently never applies and the deploy role is denied.
+  free_tier_ssm_document_arn = "arn:aws:ssm:${var.aws_region}::document/AWS-RunShellScript"
 }
 
 # -----------------------------------------------------------------------------
