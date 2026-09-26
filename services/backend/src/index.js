@@ -40,7 +40,17 @@ app.get('/api/products/:id', (req, res) => {
 
 app.post('/api/orders', (req, res) => {
   const { products } = req.body;
+  if (!Array.isArray(products) || products.length === 0) {
+    return res.status(400).json({ error: 'At least one product is required' });
+  }
   res.json({ orderId: Date.now(), products, status: 'confirmed' });
 });
 
-app.listen(PORT, () => console.log(`Backend API on port ${PORT}`));
+if (require.main === module) {
+  const server = app.listen(PORT, '0.0.0.0', () => console.log(`Backend API on port ${PORT}`));
+  const shutdown = () => server.close(() => process.exit(0));
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+}
+
+module.exports = app;

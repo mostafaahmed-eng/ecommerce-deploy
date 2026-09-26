@@ -20,6 +20,9 @@ app.get('/cart/:userId', (req, res) => {
 
 app.post('/cart/:userId/items', (req, res) => {
   const { productId, name, price, quantity = 1 } = req.body;
+  if (!productId || !name || !Number.isFinite(Number(price)) || Number(price) < 0 || !Number.isInteger(quantity) || quantity < 1) {
+    return res.status(400).json({ error: 'Invalid cart item' });
+  }
   let cart = carts.get(req.params.userId) || { items: [], total: 0 };
   
   const existingItem = cart.items.find(item => item.productId === productId);
@@ -50,4 +53,11 @@ app.delete('/cart/:userId', (req, res) => {
   res.json({ items: [], total: 0 });
 });
 
-app.listen(PORT, () => console.log(`Cart service on port ${PORT}`));
+if (require.main === module) {
+  const server = app.listen(PORT, '0.0.0.0', () => console.log(`Cart service on port ${PORT}`));
+  const shutdown = () => server.close(() => process.exit(0));
+  process.on('SIGTERM', shutdown);
+  process.on('SIGINT', shutdown);
+}
+
+module.exports = app;

@@ -14,10 +14,27 @@ spec:
         app: api
     spec:
       containers:
-      - name: api
-        image: ghcr.io/mostafaahmed-eng/ecommerce-deploy/api:latest
-        ports:
-        - containerPort: 4600
+        - name: api
+          image: ghcr.io/mostafaahmed-eng/ecommerce-deploy/api:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 4600
+          env:
+            - { name: NODE_ENV, value: production }
+            - { name: FRONTEND_URL, value: "http://frontend:3000" }
+            - { name: BACKEND_URL, value: "http://backend:4000" }
+            - { name: PAYMENT_URL, value: "http://payment:4200" }
+            - { name: CART_URL, value: "http://cart:4300" }
+            - { name: PRODUCT_URL, value: "http://product:4500" }
+            - { name: SEARCH_URL, value: "http://search:5000" }
+          readinessProbe:
+            httpGet: { path: /health, port: 4600 }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /health, port: 4600 }
+            initialDelaySeconds: 15
+            periodSeconds: 20
 
 ---
 apiVersion: v1
@@ -28,7 +45,7 @@ metadata:
 spec:
   type: ClusterIP
   ports:
-  - port: 4600
-    targetPort: 4600
+    - port: 4600
+      targetPort: 4600
   selector:
     app: api

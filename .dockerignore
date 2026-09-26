@@ -1,0 +1,9 @@
+.git
+.github
+node_modules
+coverage
+infrastructure
+monitoring
+*.log
+*.tfstate*
+.terraform
