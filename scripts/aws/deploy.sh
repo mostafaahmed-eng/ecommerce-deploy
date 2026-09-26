@@ -159,8 +159,26 @@ if [ -f "$COMPOSE_DOTENV" ]; then
   EXISTING_OWNER="$(grep -E '^GHCR_OWNER=' "$COMPOSE_DOTENV" | head -n1 | cut -d= -f2- || true)"
   [ -n "$EXISTING_BASE" ] || EXISTING_BASE="$(grep -E '^PUBLIC_BASE_URL=' "$COMPOSE_DOTENV" | head -n1 | cut -d= -f2- || true)"
 fi
-GHCR_OWNER_VALUE="${GHCR_OWNER:-${REPO%%/*}}"
+# GHCR_OWNER is the *registry-qualified* namespace, because docker-compose.prod.yml
+# references images as "${GHCR_OWNER}/ecommerce-<service>". ${REPO%%/*} is only the
+# bare account name, which Docker resolves against docker.io - so the old default
+# produced `mostafaahmed-eng/ecommerce-api:<sha>` and `compose pull` failed with:
+#
+#   denied: requested access to the resource is denied
+#   unauthorized: authentication required
+#
+# Verified against the host: the bare name is denied, while
+# `ghcr.io/mostafaahmed-eng/ecommerce-api:<sha>` resolves anonymously (the
+# packages are public, so no `docker login` is needed). The empty -> EXISTING_OWNER
+# fallback below is unchanged; only the registry qualification is new.
+GHCR_OWNER_VALUE="${GHCR_OWNER:-}"
+[ -n "$GHCR_OWNER_VALUE" ] || GHCR_OWNER_VALUE="${REPO%%/*}"
 [ -n "$GHCR_OWNER_VALUE" ] || GHCR_OWNER_VALUE="$EXISTING_OWNER"
+case "$GHCR_OWNER_VALUE" in
+  "")    ;;                            # nothing to qualify
+  */*)   ;;                            # already registry-qualified (ghcr.io/owner)
+  *)     GHCR_OWNER_VALUE="ghcr.io/$GHCR_OWNER_VALUE" ;;  # tolerate a bare owner
+esac
 BASE_URL="${EXISTING_BASE:-}"
 
 {
