@@ -269,10 +269,19 @@ jobs:
           set -euo pipefail
           # No secrets are placed in this command string - only the pinned SHA,
           # the repository name and non-secret compose settings.
-          cmd="bash /opt/ecommerce/compose/deploy.sh --sha ${SHA} --repo ${REPO} --http-port 80 --https-port 443"
+          #
+          # /opt/ecommerce/compose/ is created EMPTY by the instance bootstrap
+          # (user-data.sh), so the host-side launcher has to be staged here at
+          # the exact SHA being deployed. Staging it (rather than trusting a
+          # boot-time copy) guarantees the file executed is always the pinned
+          # one; deploy.sh then downloads every configuration file itself at
+          # this same SHA.
+          stage="set -euo pipefail; install -d -m 0755 /opt/ecommerce/compose; echo 'staging deploy.sh for ${SHA}'; curl -fsSL --retry 3 --retry-delay 2 https://raw.githubusercontent.com/${REPO}/${SHA}/scripts/aws/deploy.sh -o /tmp/deploy.sh; install -m 0755 /tmp/deploy.sh /opt/ecommerce/compose/deploy.sh; rm -f /tmp/deploy.sh; echo 'staged /opt/ecommerce/compose/deploy.sh'"
+          run="bash /opt/ecommerce/compose/deploy.sh --sha ${SHA} --repo ${REPO} --http-port 80 --https-port 443"
           if [ -n "${APP_URL}" ]; then
-            cmd="${cmd} --base-url ${APP_URL}"
+            run="${run} --base-url ${APP_URL}"
           fi
+          cmd="${stage}; ${run}"
 
           jq -n --arg c "$cmd" '{commands:[$c]}' > /tmp/ssm-params.json
 
