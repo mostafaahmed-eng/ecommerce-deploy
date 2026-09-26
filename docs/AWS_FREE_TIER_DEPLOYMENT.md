@@ -193,6 +193,40 @@ Run through this **before** every `terraform apply`.
 
 ---
 
+### 4a. CI/CD deployment gate (`ENABLE_FREE_TIER_DEPLOY`)
+
+Nothing in this document is deployed automatically. The `deploy via SSM` job in
+`.github/workflows/deploy-free-tier.yml` carries a three-part condition:
+
+```yaml
+if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.ENABLE_FREE_TIER_DEPLOY == 'true'
+```
+
+| `ENABLE_FREE_TIER_DEPLOY` | Validation and image builds | AWS SSM deployment |
+| --- | --- | --- |
+| unset (the current state), `false`, or any other value | run normally | **skipped — no AWS access at all** |
+| `true` | run normally | permitted on `refs/heads/main` |
+
+The gate is a repository **variable**, not a secret: Settings → Secrets and
+variables → Actions → Variables. Because `vars.<name>` evaluates to an empty
+string when it does not exist, a **missing** variable behaves exactly like
+`false` — the gate fails closed. AWS is therefore untouched until you
+deliberately set `ENABLE_FREE_TIER_DEPLOY=true`.
+
+Two related guard rails:
+
+- **The legacy ECS profile in `ci-cd.yml` is manual only.** Its
+  `provision-registry`, `build` and `deploy` jobs require `workflow_dispatch`
+  **from `refs/heads/main`** *and* the boolean input `deploy_legacy_ecs = true`.
+  An ordinary merge or push to `main` never runs `terraform apply` in that
+  workflow. The ECS/ECR code is retained unchanged for reference.
+- **Pull requests never publish.** `build-pr` builds `linux/amd64` and
+  `linux/arm64` with `push: false`, performs no GHCR login and holds no
+  `packages: write` permission, so PR code cannot create packages or move
+  `:latest`.
+
+---
+
 ## 5. Budget and spending alerts
 
 ### 5a. CLI (fastest, works without touching Terraform)

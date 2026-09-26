@@ -1,11 +1,29 @@
 name: CI and AWS Deploy
 
+# ---------------------------------------------------------------------------
+# Pipeline shape
+#
+#   pull_request  ->  validate only (never provisions, builds or deploys)
+#   push to main  ->  validate only
+#   workflow_dispatch from refs/heads/main with deploy_legacy_ecs == true
+#                   ->  validate -> provision-registry -> build -> deploy
+#
+# The legacy ECS/ECR production profile is MANUAL ONLY. It is preserved for
+# portfolio/reference purposes, but a normal merge or push to main can never
+# provision ECR, push ECR images, run `terraform apply` or deploy to ECS.
+# ---------------------------------------------------------------------------
 on:
   pull_request:
     branches: [main]
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      deploy_legacy_ecs:
+        description: "Explicitly deploy the legacy ECS production profile"
+        required: true
+        default: false
+        type: boolean
 
 concurrency:
   group: production-${{ github.ref }}
@@ -64,7 +82,7 @@ jobs:
 
   provision-registry:
     name: Provision ECR repositories
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_legacy_ecs == true
     needs: validate
     runs-on: ubuntu-latest
     permissions:
@@ -111,7 +129,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.service }}
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_legacy_ecs == true
     needs: provision-registry
     runs-on: ubuntu-latest
     strategy:
@@ -149,7 +167,7 @@ jobs:
 
   deploy:
     name: Deploy to ECS
-    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_legacy_ecs == true
     needs: build
     runs-on: ubuntu-latest
     environment:

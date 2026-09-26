@@ -308,6 +308,15 @@ rename. Secret values are never printed and the file is git-ignored. See the
 | Variable | `AWS_REGION` | yes | Region for `configure-aws-credentials` |
 | Variable | `AWS_INSTANCE_ID` | yes | Target for SSM Run Command |
 | Variable | `APP_URL` | recommended | Base URL for the post-deploy smoke test |
+| Variable | `ENABLE_FREE_TIER_DEPLOY` | **required to deploy** | Must be exactly `true` to permit the SSM deploy job |
+
+`ENABLE_FREE_TIER_DEPLOY` is the deployment gate. It is **not** configured yet,
+so AWS deployment is currently disabled:
+
+| Value | Effect |
+| --- | --- |
+| unset / `false` / anything except `true` | validation and image builds may run; the **AWS SSM deployment is skipped** |
+| `true` | permits the free-tier SSM deploy job on `main` |
 
 `TF_STATE_BUCKET` is **not** used by this workflow — the EC2 profile keeps
 Terraform state local — but the ECS profile's remote-state support is untouched.
@@ -316,14 +325,26 @@ are private, the host needs `docker login ghcr.io` with a `read:packages` token.
 
 ### 4. Deploy
 
+Deployment is **disabled by default**. Set the repository variable
+`ENABLE_FREE_TIER_DEPLOY=true` (Settings → Secrets and variables → Actions →
+Variables) to permit it; leave it unset or set it to `false` and the deploy job
+stays skipped while validation and builds still run.
+
 Merge to `main` (or run `workflow_dispatch` **from `main` only**). The workflow:
 
 1. `validate` — tests, syntax checks, `terraform fmt`/`validate` for all three modules, Compose config, `nginx -t`. Runs on every PR and **never** deploys.
-2. `build` — QEMU + Buildx, `linux/amd64,linux/arm64`, pushes `ghcr.io/<owner>/ecommerce-<service>:<SHA>` (and `latest`).
-3. `deploy` — GitHub **OIDC** → AWS → `aws ssm send-command` running
-   `/opt/ecommerce/compose/deploy.sh --sha <SHA>` → poll → public smoke tests.
+2. `build-pr` (pull requests only) — QEMU + Buildx over `linux/amd64,linux/arm64` with **`push: false`**. No GHCR login, no `packages: write` permission and no tag, so a PR can never publish an image or touch `:latest`.
+3. `build-publish` (`main` only) — the same multi-arch build, but logs in to GHCR and pushes `ghcr.io/<owner>/ecommerce-<service>:<SHA>` **and** `latest`.
+4. `deploy` — requires **all three**: `refs/heads/main`, an event that is not `pull_request`, and `ENABLE_FREE_TIER_DEPLOY == 'true'`. GitHub **OIDC** → AWS → `aws ssm send-command` running `/opt/ecommerce/compose/deploy.sh --sha <SHA>` → poll → public smoke tests.
 
 Static AWS keys are never used. `id-token: write` is granted only to the deploy job.
+
+The legacy ECS profile in `ci-cd.yml` is **manual only**. Its
+`provision-registry`, `build` and `deploy` jobs require `workflow_dispatch`
+**from `refs/heads/main`** *and* the boolean input `deploy_legacy_ecs = true`.
+Validation still runs on every pull request and on every push to `main`, but a
+normal merge can never provision ECR, push ECR images, run `terraform apply` or
+deploy to ECS. The legacy ECS code is preserved for portfolio/reference use.
 
 ### 5. Operate without SSH
 
@@ -397,10 +418,28 @@ the instance — export anything you want to keep first.
 | Profile | Workflow | Secrets | Variables |
 | --- | --- | --- | --- |
 | A — ECS | `ci-cd.yml` | `AWS_ROLE_ARN`, `TF_STATE_BUCKET`, `PAYMENT_SECRETS_ARN` | `AWS_REGION`, `PUBLIC_DOMAIN_NAME`, `ROUTE53_ZONE_ID` |
-| B — EC2 | `deploy-free-tier.yml` | `AWS_ROLE_ARN` | `AWS_REGION`, `AWS_INSTANCE_ID`, `APP_URL` |
+| B — EC2 | `deploy-free-tier.yml` | `AWS_ROLE_ARN` | `AWS_REGION`, `AWS_INSTANCE_ID`, `APP_URL`, `ENABLE_FREE_TIER_DEPLOY` |
 
-Only `refs/heads/main` may deploy. Pull requests validate only. GitHub OIDC is
-used by both; no long-lived AWS key exists in either workflow.
+Deployment gates:
+
+- **Profile B — free-tier EC2.** The `deploy via SSM` job requires **all three**:
+  `refs/heads/main`, an event that is not `pull_request`, and
+  `ENABLE_FREE_TIER_DEPLOY == 'true'`.
+
+  | `ENABLE_FREE_TIER_DEPLOY` | Effect |
+  | --- | --- |
+  | unset / `false` | validation and builds may run; **AWS SSM deployment is disabled** |
+  | `true` | permits the free-tier SSM deploy job on `main` |
+
+- **Profile A — legacy ECS.** `provision-registry`, `build` and `deploy` require
+  **all three**: `workflow_dispatch`, `refs/heads/main`, and the boolean input
+  `deploy_legacy_ecs = true`. A normal merge or push to `main` cannot run
+  `terraform apply` or deploy ECS. The legacy ECS code stays in the repository
+  for portfolio/reference purposes.
+
+Pull requests validate and build images with `push: false` — no GHCR login, no
+`packages: write`, no `:latest`. GitHub OIDC is used by both profiles; no
+long-lived AWS key exists in either workflow.
 
 ## Cost and cleanup
 

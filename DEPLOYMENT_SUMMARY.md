@@ -374,18 +374,29 @@ refreshes so a redeploy cannot silently drop the certificate.
 
 ## 13. GitHub Actions workflow
 
-New `.github/workflows/deploy-free-tier.yml` (the existing `ci-cd.yml` for the
-ECS profile is untouched):
+New `.github/workflows/deploy-free-tier.yml`. `ci-cd.yml` for the legacy ECS
+profile is preserved in full but is now **manual only** (see the gate note
+below):
 
 | Stage | Trigger | Notes |
 | --- | --- | --- |
 | `validate` | every PR **and** push | `npm ci` · `npm test` · `node --check` over all JS · `bash -n` over all shell · `terraform fmt -check -recursive` · `init -backend=false` + `validate` for **all three** modules · `docker compose config` for both files · `nginx -t` |
-| `build` | after `validate` | QEMU + Buildx, **`platforms: linux/amd64,linux/arm64`**, matrix of the 7 services, pushes `ghcr.io/<owner>/ecommerce-<service>:<GITHUB_SHA>` **and** `:latest`, GHA layer cache |
-| `deploy` | `github.ref == 'refs/heads/main'` **and** `github.event_name != 'pull_request'` | GitHub **OIDC** → `aws-actions/configure-aws-credentials` → **SSM Run Command** → poll → public smoke tests |
+| `build-pr` | after `validate`, **pull requests only** | QEMU + Buildx, **`platforms: linux/amd64,linux/arm64`**, matrix of the 7 services, **`push: false`** — no GHCR login, no `packages: write`, no tag, so `:latest` can never move |
+| `build-publish` | after `validate`, `refs/heads/main` **and** not a `pull_request` | same multi-arch matrix, logs in to GHCR and pushes `ghcr.io/<owner>/ecommerce-<service>:<GITHUB_SHA>` **and** `:latest`, GHA layer cache |
+| `deploy` | **all three**: `github.ref == 'refs/heads/main'`, `github.event_name != 'pull_request'`, `vars.ENABLE_FREE_TIER_DEPLOY == 'true'` | GitHub **OIDC** → `aws-actions/configure-aws-credentials` → **SSM Run Command** → poll → public smoke tests |
 
-- `permissions:` top level is `contents: read`; the build job adds
-  `packages: write`; the deploy job adds **`id-token: write`** (required for
-  OIDC).
+- `permissions:` top level is `contents: read`. **Only `build-publish` adds
+  `packages: write`, and only the deploy job adds `id-token: write`** (required
+  for OIDC). `build-pr` runs with `contents: read` alone, so a pull request can
+  never obtain publish or AWS permissions.
+- **`ENABLE_FREE_TIER_DEPLOY` gates the AWS deployment.** It is a repository
+  *variable*, not a secret. Unset — the current state — or any value other than
+  the exact string `true` keeps the `deploy via SSM` job **skipped**; only `true`
+  permits the SSM deploy on `main`. Validation and image builds still run either
+  way.
+- **Pull requests never publish.** `build-pr` uses `push: false`, performs no
+  GHCR login and declares no tag at all, so PR code cannot create packages or
+  move `:latest`.
 - `workflow_dispatch` is allowed but the `if:` guard refuses any ref other than
   `refs/heads/main`, and a second explicit guard inside the job re-checks it.
 - **No static AWS keys anywhere.** `GITHUB_TOKEN` is only used for GHCR.
@@ -394,6 +405,20 @@ ECS profile is untouched):
 - The SSM command string is built in `bash`, serialised with `jq` into a
   `file://` parameters document, and contains **no secret** — only the SHA,
   the repository name and non-secret ports.
+
+**Legacy ECS profile (`ci-cd.yml`) is manual only.** `provision-registry`,
+`build` and `deploy` all carry exactly this condition:
+
+```yaml
+if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && inputs.deploy_legacy_ecs == true
+```
+
+The workflow gained a `workflow_dispatch` boolean input `deploy_legacy_ecs`
+(`required: true`, `default: false`). `validate` still runs on every pull
+request and on every push to `main`, so an ordinary merge **cannot** provision
+ECR, push ECR images, run `terraform apply` or deploy to ECS. The legacy
+ECS/ECR code and its two `terraform apply` steps are retained unchanged for
+portfolio/reference purposes, behind that single manual gate.
 
 ---
 
@@ -405,7 +430,18 @@ ECS profile is untouched):
 | **Variable** | `AWS_REGION` | yes | Region for `configure-aws-credentials` |
 | **Variable** | `AWS_INSTANCE_ID` | yes | `--instance-id` for SSM Run Command |
 | **Variable** | `APP_URL` | recommended | Base URL for the post-deploy public smoke test |
-| `GITHUB_TOKEN` | automatic | — | GHCR push (write permission on the build job) |
+| **Variable** | `ENABLE_FREE_TIER_DEPLOY` | **yes, to deploy** | `true` permits the SSM deploy job; unset or `false` skips it. **Not configured yet.** |
+| `GITHUB_TOKEN` | automatic | — | GHCR push (write permission on `build-publish` only) |
+
+**`ENABLE_FREE_TIER_DEPLOY` is the deployment gate and it fails closed.**
+`vars.ENABLE_FREE_TIER_DEPLOY` evaluates to an empty string when the repository
+variable does not exist, so today — before AWS is configured — the `deploy via
+SSM` job is **SKIPPED**:
+
+| Value | Validation / build | AWS SSM deployment |
+| --- | --- | --- |
+| unset (current), `false`, or anything but `true` | runs | **skipped** |
+| `true` | runs | permitted on `refs/heads/main` |
 
 **`TF_STATE_BUCKET` is not used by this workflow.** The new profile keeps
 Terraform state local by default, so the variable is unnecessary — but the
@@ -727,8 +763,13 @@ scripts/aws/load-ssm-env.sh --list        # names only
 # 3. GitHub settings  (requires GitHub)
 #    secret  AWS_ROLE_ARN
 #    vars    AWS_REGION, AWS_INSTANCE_ID, APP_URL
+#    var     ENABLE_FREE_TIER_DEPLOY = 'true'   <- deployment gate; unset means
+#                                                  AWS deploy stays DISABLED
 
 # 4. deploy  (push to main, or workflow_dispatch from main only)
+#    skipped unless ENABLE_FREE_TIER_DEPLOY == 'true'
+#    the legacy ECS profile in ci-cd.yml is manual-only:
+#    workflow_dispatch from main AND inputs.deploy_legacy_ecs == true
 
 # 5. optional HTTPS  (requires DNS)
 scripts/aws/setup-https.sh example.com admin@example.com

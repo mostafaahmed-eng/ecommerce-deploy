@@ -4,18 +4,29 @@
 #
 # Pipeline shape
 #
-#   pull_request  ->  validate (never deploys)
-#   push to main  ->  validate -> build (GHCR, multi-arch) -> deploy (SSM)
-#   workflow_dispatch -> same as push, but ONLY from refs/heads/main
+#   pull_request  ->  validate -> build-pr      multi-arch, push: false,
+#                                               no GHCR login, no packages:write,
+#                                               can never publish :latest
+#   push to main  ->  validate -> build-publish multi-arch, GHCR login,
+#                                               immutable SHA tag + :latest
+#                                               -> deploy (SSM)
+#   workflow_dispatch from refs/heads/main -> same as push
+#
+# Deployment is additionally gated by the repository variable
+# ENABLE_FREE_TIER_DEPLOY:
+#
+#   unset or anything except 'true'  ->  the "deploy via SSM" job is SKIPPED
+#   'true'                           ->  the SSM deploy job is permitted on main
 #
 # Authentication is GitHub OIDC -> AWS IAM role. There are NO static AWS
 # access keys anywhere in this workflow.
 #
 # Required GitHub configuration (see DEPLOYMENT_SUMMARY.md):
-#   secret  AWS_ROLE_ARN        IAM role trusted by token.actions.githubusercontent.com
-#   var     AWS_REGION          e.g. us-east-1
-#   var     AWS_INSTANCE_ID     instance created by infrastructure/terraform/free-tier-ec2
-#   var     APP_URL             public base URL, e.g. http://1.2.3.4 (optional but recommended)
+#   secret  AWS_ROLE_ARN            IAM role trusted by token.actions.githubusercontent.com
+#   var     AWS_REGION              e.g. us-east-1
+#   var     AWS_INSTANCE_ID         instance created by infrastructure/terraform/free-tier-ec2
+#   var     APP_URL                 public base URL, e.g. http://1.2.3.4 (optional but recommended)
+#   var     ENABLE_FREE_TIER_DEPLOY 'true' permits the SSM deploy job; unset/false disables it
 
 name: Free-tier live demo
 
@@ -113,12 +124,50 @@ jobs:
             nginx:1.27-alpine nginx -t
 
   # ---------------------------------------------------------------------------
-  # 7-9. Multi-arch images (linux/amd64 + linux/arm64) pushed to GHCR.
-  #       ARM64 is required because the demo host is a Graviton t4g.small.
+  # 7. PR validation build: multi-arch (linux/amd64 + linux/arm64), NEVER pushed.
+  #    No GHCR login, no `packages: write` permission and no tag at all, so a
+  #    pull request can never publish an image or overwrite :latest.
+  #    ARM64 is required because the demo host is a Graviton t4g.small.
   # ---------------------------------------------------------------------------
-  build:
-    name: build ${{ matrix.service }}
+  build-pr:
+    name: build ${{ matrix.service }} (no push)
     needs: validate
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        service: [frontend, backend, payment, search, cart, product, api]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build only (push disabled for pull requests)
+        uses: docker/build-push-action@v6
+        with:
+          context: ./services/${{ matrix.service }}
+          platforms: linux/amd64,linux/arm64
+          push: false
+          cache-from: type=gha,scope=${{ matrix.service }}
+          cache-to: type=gha,scope=${{ matrix.service }},mode=max
+
+  # ---------------------------------------------------------------------------
+  # 8. Publish build: only on refs/heads/main via push or workflow_dispatch.
+  #    This is the ONLY job that logs in to GHCR, holds `packages: write`,
+  #    sets push: true or writes a :latest tag.
+  # ---------------------------------------------------------------------------
+  build-publish:
+    name: publish ${{ matrix.service }}
+    needs: validate
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -162,14 +211,18 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # 10-13. Deploy to the EC2 host over AWS Systems Manager Run Command.
-  #         Absolutely gated to refs/heads/main - PRs can never reach here.
+  #         Triple-gated: refs/heads/main, never a pull_request, and the
+  #         repository variable ENABLE_FREE_TIER_DEPLOY must equal 'true'.
+  #         It fails closed - an unset variable keeps this job skipped.
   # ---------------------------------------------------------------------------
   deploy:
     name: deploy via SSM
-    needs: build
+    needs: build-publish
     runs-on: ubuntu-latest
-    # Both conditions must hold: this run is on main, and it is not a PR.
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    # All three conditions must hold. vars.ENABLE_FREE_TIER_DEPLOY evaluates to
+    # an empty string when the repository variable does not exist, so a missing
+    # or mis-set variable always skips this job.
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && vars.ENABLE_FREE_TIER_DEPLOY == 'true'
     permissions:
       id-token: write
       contents: read
