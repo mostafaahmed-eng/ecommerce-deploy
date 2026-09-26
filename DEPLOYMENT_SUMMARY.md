@@ -444,7 +444,11 @@ SSM` job is **SKIPPED**:
 | unset (current), `false`, or anything but `true` | runs | **skipped** |
 | `true` | runs | permitted on `refs/heads/main` |
 
-**The two profiles use different roles and never share one.**
+**The two profiles use different roles and never share one.** With default
+variables the bootstrap creates **only** the free-tier role: the legacy role
+(and its `PowerUserAccess`) and the S3 state bucket are opt-in via
+`enable_legacy_ecs_role` / `create_state_bucket`, both defaulting to `false`,
+and their outputs evaluate to `null` while disabled.
 
 | Profile | Workflow | Secret | Role | Grant |
 | --- | --- | --- | --- | --- |
@@ -768,27 +772,73 @@ Route 53 zone, WAF, idle Elastic IP, CloudWatch Logs ingestion, ECR storage
 ### Handoff checklist for the person running the demo
 
 ```bash
-# 1. infrastructure  (requires AWS)
+# ===========================================================================
+# DEPLOYMENT ORDER - follow exactly.
+# ENABLE_FREE_TIER_DEPLOY stays DISABLED until step 15.
+# Narrative version: docs/AWS_FREE_TIER_DEPLOYMENT.md  (section 9)
+# ===========================================================================
+
+#  1. merge the security PR
+
+#  2. authenticate locally  (requires AWS)
+aws configure sso && aws sso login --profile YOUR_PROFILE
+aws sts get-caller-identity
+
+#  3. plan the free-tier EC2 profile
 cd infrastructure/terraform/free-tier-ec2
 terraform init -backend=false
 terraform plan -var='create_budget=true' -var='budget_email=you@example.com'
-#    -> read the plan in full, then apply
 
-# 2. secrets  (requires AWS; values are never printed)
-scripts/aws/load-ssm-env.sh --list        # names only
+#  4. review cost and EVERY resource in that plan
 
-# 3. GitHub settings  (requires GitHub)
-#    secrets AWS_FREE_TIER_ROLE_ARN  (free-tier, least privilege)
-#            AWS_LEGACY_ROLE_ARN     (legacy ECS, manual-only, broad)
-#    vars    AWS_REGION, AWS_INSTANCE_ID, APP_URL
-#    var     ENABLE_FREE_TIER_DEPLOY = 'true'   <- deployment gate; unset means
-#                                                  AWS deploy stays DISABLED
+#  5. apply the free-tier EC2 profile (only after step 4)
+#     terraform apply ...
 
-# 4. deploy  (push to main, or workflow_dispatch from main only)
-#    skipped unless ENABLE_FREE_TIER_DEPLOY == 'true'
-#    the legacy ECS profile in ci-cd.yml is manual-only:
-#    workflow_dispatch from main AND inputs.deploy_legacy_ecs == true
+#  6. obtain instance_id (module output == AWS_INSTANCE_ID Actions variable)
 
-# 5. optional HTTPS  (requires DNS)
+#  7. verify the instance is an SSM managed node
+aws ssm describe-instance-information --filters "Key=InstanceIds,Values=<instance-id>"
+
+#  8. bootstrap plan with ALL THREE set
+cd ../../bootstrap
+#     free_tier_instance_id   = "<instance-id>"
+#     enable_legacy_ecs_role  = false
+#     create_state_bucket     = false
+terraform plan -out=bootstrap.tfplan
+
+#  9. review the bootstrap plan: OIDC provider (if absent) + free-tier role +
+#     its policy ONLY.  NO PowerUserAccess, NO legacy role, NO S3 bucket.
+
+# 10. apply the bootstrap
+terraform apply bootstrap.tfplan
+terraform output                                   # free_tier_role_arn, ...
+
+# 11. production application values -> /ecommerce/* SSM Parameter Store
+scripts/aws/load-ssm-env.sh --list                 # names only, never values
+
+# 12. GitHub configuration  (requires GitHub)
+#     secret  AWS_FREE_TIER_ROLE_ARN  <- free_tier_role_arn output
+#     var     AWS_REGION, AWS_INSTANCE_ID, APP_URL
+#     (AWS_LEGACY_ROLE_ARN / TF_STATE_BUCKET are for the OPTIONAL legacy
+#      ECS profile only - not needed for this demo)
+
+# 13. KEEP ENABLE_FREE_TIER_DEPLOY UNSET  -> AWS SSM deploy stays DISABLED
+
+# 14. manual OIDC/SSM connectivity test: prove trust + policy before enabling
+
+# 15. only NOW set ENABLE_FREE_TIER_DEPLOY=true, then push to main
+#     deploy  (push to main, or workflow_dispatch from main only)
+#     skipped unless ENABLE_FREE_TIER_DEPLOY == 'true'
+
+# --- optional, requires DNS ------------------------------------------------
 scripts/aws/setup-https.sh example.com admin@example.com
+
+# ===========================================================================
+# LEGACY ECS SETUP - OPTIONAL, unrelated to the live demo, never required:
+#   bootstrap: enable_legacy_ecs_role = true   (the only PowerUserAccess)
+#              create_state_bucket    = true
+#   GitHub:    AWS_LEGACY_ROLE_ARN, TF_STATE_BUCKET,
+#              AWS_REGION, PUBLIC_DOMAIN_NAME, ROUTE53_ZONE_ID
+#   trigger:   workflow_dispatch from main AND inputs.deploy_legacy_ecs == true
+# ===========================================================================
 ```

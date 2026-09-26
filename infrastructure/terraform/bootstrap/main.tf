@@ -1,22 +1,38 @@
 # =============================================================================
-# AWS bootstrap: Terraform state bucket + GitHub Actions OIDC deployment roles
+# AWS bootstrap: GitHub Actions OIDC deployment roles (+ optional extras)
 #
-# TWO SEPARATE ROLES ARE CREATED ON PURPOSE. They must never be shared.
+# DEFAULT BEHAVIOUR IS THE SECURE, FREE-TIER-ONLY PATH. With default variables
+# this root creates ONLY:
 #
-#   A. legacy ECS role   -> aws_iam_role.legacy_ecs
-#      Broad (PowerUserAccess) because `terraform apply` for the EKS/ECS stack
-#      has to create VPCs, clusters, ALBs, ECR repos, IAM roles, etc.
-#      Consumed ONLY by .github/workflows/ci-cd.yml through the Actions secret
-#      AWS_LEGACY_ROLE_ARN, whose workflow jobs are manual-only
-#      (workflow_dispatch from refs/heads/main + inputs.deploy_legacy_ecs).
+#   - the account-level GitHub OIDC provider (and only if one does not exist)
+#   - the free-tier GitHub Actions IAM role
+#   - the free-tier least-privilege SSM policy
 #
-#   B. free-tier role    -> aws_iam_role.free_tier
-#      Least privilege. .github/workflows/deploy-free-tier.yml only ever calls
-#      `aws ssm send-command` (AWS-RunShellScript) and
-#      `aws ssm get-command-invocation` against ONE EC2 instance. It therefore
-#      gets exactly those two actions and nothing else - no PowerUserAccess,
-#      no AdministratorAccess, no iam:*, no ec2:*, no s3:*, no ssm:*.
-#      Consumed through the Actions secret AWS_FREE_TIER_ROLE_ARN.
+# and creates NONE of:
+#
+#   - PowerUserAccess          (needs var.enable_legacy_ecs_role = true)
+#   - the legacy ECS role      (needs var.enable_legacy_ecs_role = true)
+#   - the S3 state bucket      (needs var.create_state_bucket     = true)
+#
+# The free-tier EC2 module keeps local state by default, so no remote-state
+# bucket is required for the live demo.
+#
+# -----------------------------------------------------------------------------
+# A. legacy ECS role   -> aws_iam_role.legacy_ecs      [OPT-IN, default off]
+#    Broad (PowerUserAccess) because `terraform apply` for the EKS/ECS stack
+#    has to create VPCs, clusters, ALBs, ECR repos, IAM roles, etc.
+#    Consumed ONLY by .github/workflows/ci-cd.yml through the Actions secret
+#    AWS_LEGACY_ROLE_ARN, whose workflow jobs are manual-only
+#    (workflow_dispatch from refs/heads/main + inputs.deploy_legacy_ecs).
+#    This variable is unrelated to the live demo.
+#
+# B. free-tier role    -> aws_iam_role.free_tier        [ALWAYS CREATED]
+#    Least privilege. .github/workflows/deploy-free-tier.yml only ever calls
+#    `aws ssm send-command` (AWS-RunShellScript) and
+#    `aws ssm get-command-invocation` against ONE EC2 instance. It therefore
+#    gets exactly those two actions and nothing else - no PowerUserAccess,
+#    no AdministratorAccess, no iam:*, no ec2:*, no s3:*, no ssm:*.
+#    Consumed through the Actions secret AWS_FREE_TIER_ROLE_ARN.
 #
 # THIS FILE IS NOT TO BE APPLIED YET. It is design-only until the AWS phase is
 # explicitly opened.
@@ -72,22 +88,29 @@ locals {
 }
 
 # -----------------------------------------------------------------------------
-# S3 bucket for Terraform remote state (private, versioned, encrypted, locked
-# down against public access).
+# OPTIONAL S3 bucket for Terraform remote state (private, versioned, encrypted,
+# locked down against public access).
+#
+# Disabled by default: the free-tier EC2 module keeps its state locally, so the
+# live demo does not need a remote-state bucket at all. Enable with
+# var.create_state_bucket = true.
 # -----------------------------------------------------------------------------
 resource "aws_s3_bucket" "state" {
+  count         = var.create_state_bucket ? 1 : 0
   bucket        = local.state_bucket_name
   force_destroy = false
   tags          = { Project = var.project_name, ManagedBy = "TerraformBootstrap" }
 }
 
 resource "aws_s3_bucket_versioning" "state" {
-  bucket = aws_s3_bucket.state.id
+  count  = var.create_state_bucket ? 1 : 0
+  bucket = aws_s3_bucket.state[0].id
   versioning_configuration { status = "Enabled" }
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "state" {
-  bucket = aws_s3_bucket.state.id
+  count  = var.create_state_bucket ? 1 : 0
+  bucket = aws_s3_bucket.state[0].id
 
   rule {
     apply_server_side_encryption_by_default {
@@ -97,7 +120,8 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "state" {
 }
 
 resource "aws_s3_bucket_public_access_block" "state" {
-  bucket                  = aws_s3_bucket.state.id
+  count                   = var.create_state_bucket ? 1 : 0
+  bucket                  = aws_s3_bucket.state[0].id
   block_public_acls       = true
   block_public_policy     = true
   ignore_public_acls      = true
@@ -134,9 +158,16 @@ resource "aws_iam_openid_connect_provider" "github" {
 
 # =============================================================================
 # A. LEGACY ECS DEPLOYMENT ROLE - broad, manual-only, never used by free-tier
+#
+# OPT-IN: every resource below is gated on var.enable_legacy_ecs_role, which
+# defaults to false. With defaults NOTHING here exists - no role, no
+# PowerUserAccess attachment, no legacy IAM policy. Enable it only if you
+# actually intend to run the legacy ECS profile; it is unrelated to the
+# free-tier live demo.
 # =============================================================================
 resource "aws_iam_role" "legacy_ecs" {
-  name = "${var.project_name}-github-actions-legacy"
+  count = var.enable_legacy_ecs_role ? 1 : 0
+  name  = "${var.project_name}-github-actions-legacy"
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [{
@@ -150,17 +181,20 @@ resource "aws_iam_role" "legacy_ecs" {
 }
 
 # Kept for portfolio/reference purposes. This is the ONLY place in the whole
-# repository where PowerUserAccess is granted, and it is bound to the legacy
-# profile which can only be triggered by workflow_dispatch from refs/heads/main
-# with inputs.deploy_legacy_ecs == true.
+# repository where PowerUserAccess is granted, it is bound to the legacy
+# profile (which can only be triggered by workflow_dispatch from refs/heads/main
+# with inputs.deploy_legacy_ecs == true), and the attachment itself does not
+# exist unless var.enable_legacy_ecs_role = true.
 resource "aws_iam_role_policy_attachment" "legacy_power_user" {
-  role       = aws_iam_role.legacy_ecs.name
+  count      = var.enable_legacy_ecs_role ? 1 : 0
+  role       = aws_iam_role.legacy_ecs[0].name
   policy_arn = "arn:aws:iam::aws:policy/PowerUserAccess"
 }
 
 resource "aws_iam_role_policy" "legacy_manage_project_roles" {
-  name = "ManageProjectRoles"
-  role = aws_iam_role.legacy_ecs.id
+  count = var.enable_legacy_ecs_role ? 1 : 0
+  name  = "ManageProjectRoles"
+  role  = aws_iam_role.legacy_ecs[0].id
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
@@ -231,17 +265,18 @@ resource "aws_iam_policy" "free_tier_ssm_deploy" {
       },
       {
         # RESOURCE "*" IS REQUIRED HERE AND IS NOT AN OVER-GRANT.
-        # Per the AWS Service Authorization Reference for Systems Manager,
-        # GetCommandInvocation does not expose a resource type, i.e. it does
-        # not support resource-level permissions, so any policy that omits
-        # Resource "*" simply denies it. It therefore cannot be narrowed to
-        # the instance or the document.
+        # CONFIRMED against the AWS Systems Manager Service Authorization
+        # Reference: GetCommandInvocation exposes no resource type, i.e. it
+        # does not support resource-level permissions, so any policy that omits
+        # Resource "*" simply denies it. It therefore cannot be narrowed to the
+        # instance or to the document.
+        # SendCommand, by contrast, DOES support resource-level permissions and
+        # stays scoped to AWS-RunShellScript plus the single EC2 instance in the
+        # statement above.
         # Residual risk: a caller holding a valid CommandId could read another
         # command's output. The role cannot create commands for anything but
         # the single instance above, so in practice the reachable blast radius
         # is the output of its own deploy commands.
-        # CONFIRM against the AWS Service Authorization Reference at apply time
-        # - this document could not be reached from the build environment.
         Sid      = "ReadDeployCommandInvocation"
         Effect   = "Allow"
         Action   = ["ssm:GetCommandInvocation"]
@@ -287,6 +322,18 @@ variable "state_bucket_name" {
   nullable    = true
 }
 
+variable "create_state_bucket" {
+  type        = bool
+  default     = false
+  description = "Create the optional S3 Terraform remote-state bucket."
+}
+
+variable "enable_legacy_ecs_role" {
+  type        = bool
+  default     = false
+  description = "Create the broad legacy ECS GitHub Actions role. Disabled by default."
+}
+
 variable "github_oidc_provider_arn" {
   description = <<-EOT
     ARN of a token.actions.githubusercontent.com OIDC provider that ALREADY
@@ -302,10 +349,11 @@ variable "github_oidc_provider_arn" {
 variable "free_tier_instance_id" {
   description = <<-EOT
     EC2 instance ID that aws_iam_role.free_tier may run AWS-RunShellScript on.
-    Leave null to keep the role fail-closed (the SendCommand statement then
-    only matches a placeholder that is not a real instance). Set it to the
-    instance created by infrastructure/terraform/free-tier-ec2, which is also
-    the value of the GitHub Actions variable AWS_INSTANCE_ID.
+    Populate this AFTER the free-tier EC2 instance exists - it is the same
+    value as the instance_id output of infrastructure/terraform/free-tier-ec2
+    and as the GitHub Actions variable AWS_INSTANCE_ID. Leave null to keep the
+    role fail-closed (the SendCommand statement then only matches a placeholder
+    that is not a real instance, so the role cannot target anything).
   EOT
   type        = string
   default     = null
@@ -316,13 +364,18 @@ variable "free_tier_instance_id" {
 # Outputs - one ARN per profile. There is deliberately no generic
 # `github_actions_role_arn` output any more, so neither workflow can be wired
 # to the wrong role by accident.
+#
+# Outputs for OPT-IN resources evaluate to null when the resource is disabled,
+# so reading them never errors.
 # =============================================================================
-output "state_bucket_name" { value = aws_s3_bucket.state.id }
+# null unless var.create_state_bucket = true
+output "state_bucket_name" { value = try(aws_s3_bucket.state[0].id, null) }
 
 output "github_oidc_provider_arn" { value = local.oidc_provider_arn }
 
 # Secret AWS_LEGACY_ROLE_ARN for .github/workflows/ci-cd.yml
-output "legacy_role_arn" { value = aws_iam_role.legacy_ecs.arn }
+# null unless var.enable_legacy_ecs_role = true (the default)
+output "legacy_role_arn" { value = try(aws_iam_role.legacy_ecs[0].arn, null) }
 
 # Secret AWS_FREE_TIER_ROLE_ARN for .github/workflows/deploy-free-tier.yml
 output "free_tier_role_arn" { value = aws_iam_role.free_tier.arn }
