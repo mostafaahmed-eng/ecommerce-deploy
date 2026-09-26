@@ -17,7 +17,33 @@ app.use((req, res, next) => {
   res.locals.cspNonce = crypto.randomBytes(16).toString('base64');
   next();
 });
+// helmet MERGES its own default directives with the ones supplied below, which
+// is why `upgrade-insecure-requests` (and helmet's default Strict-Transport-
+// Security) reach the browser even though neither is written out here.
+//
+// On an insecure origin that is actively destructive. The production host
+// serves plain HTTP - nginx publishes 443 but nothing listens there until
+// setup-https.sh runs - and `upgrade-insecure-requests` makes every browser
+// rewrite the page's relative asset URLs (/styles.css, /app.js,
+// /assets/products/*.png) to https://, where the connection is refused:
+//
+//   net::ERR_TUNNEL_CONNECTION_FAILED  https://<host>/styles.css
+//
+// The HTML still arrives (the document itself is exempt), so the page renders
+// as unstyled markup with JavaScript dead, while the curl-based smoke tests
+// keep reporting 200 because curl ignores CSP entirely. Advertising HSTS on a
+// plain-HTTP origin is equally wrong.
+//
+// PUBLIC_BASE_URL is the single source of truth for the public origin - it is
+// exactly what deploy.sh writes into compose/.env - so the transport headers
+// are tuned from it: https keeps both, http drops both, and an unset value
+// preserves the previous behaviour for deployments that terminate TLS elsewhere.
+const PUBLIC_BASE_URL = (process.env.PUBLIC_BASE_URL || '').trim();
+const originIsHttps = PUBLIC_BASE_URL.startsWith('https://');
+const originIsHttp = PUBLIC_BASE_URL.startsWith('http://');
+const originKnown = originIsHttps || originIsHttp;
 app.use(helmet({
+  ...(originKnown ? { hsts: originIsHttps } : {}),
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
@@ -27,7 +53,9 @@ app.use(helmet({
       connectSrc: ["'self'"],
       objectSrc: ["'none'"],
       baseUri: ["'self'"],
-      frameAncestors: ["'none'"]
+      frameAncestors: ["'none'"],
+      // `null` removes a directive helmet would otherwise add by default.
+      ...(originKnown ? { upgradeInsecureRequests: originIsHttps ? [] : null } : {})
     }
   }
 }));

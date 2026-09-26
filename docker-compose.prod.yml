@@ -46,6 +46,10 @@ services:
       SEARCH_URL: http://search:5000
       PRODUCT_URL: http://product:4500
       API_URL: http://api:4600
+      # Public origin, taken from compose/.env (written by deploy.sh). The
+      # frontend uses it to decide whether helmet may advertise HSTS and
+      # `upgrade-insecure-requests`; see services/frontend/server.js.
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:-}
     depends_on:
       api:
         condition: service_healthy
