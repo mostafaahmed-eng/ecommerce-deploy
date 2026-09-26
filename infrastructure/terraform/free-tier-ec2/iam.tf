@@ -95,7 +95,7 @@ resource "aws_budgets_budget" "demo" {
 
   cost_filter {
     name   = "TagKeyValue"
-    values = ["user:Project$${var.project_name}"]
+    values = [format("user:Project$%s", var.project_name)]
   }
 
   dynamic "notification" {

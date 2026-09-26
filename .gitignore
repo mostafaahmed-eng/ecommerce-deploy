@@ -24,6 +24,7 @@ letsencrypt/
 *.tfstate
 *.tfstate.*
 *.tfplan
+tfplan
 *.tfvars
 !*.tfvars.example
 
