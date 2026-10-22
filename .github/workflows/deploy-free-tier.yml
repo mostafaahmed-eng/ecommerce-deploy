@@ -59,7 +59,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up Node.js
         uses: actions/setup-node@v4
@@ -145,7 +145,7 @@ jobs:
         service: [frontend, backend, payment, search, cart, product, api]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -181,7 +181,7 @@ jobs:
         service: [frontend, backend, payment, search, cart, product, api]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Lowercase the image owner (GHCR requires it)
         id: owner
@@ -234,7 +234,7 @@ jobs:
       cancel-in-progress: false
     steps:
       - name: Checkout (deployment scripts)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Require a configured AWS region and instance
         run: |
