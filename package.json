@@ -24,6 +24,6 @@
   },
   "devDependencies": {
     "jsdom": "^26.1.0",
-    "supertest": "^7.1.4"
+    "supertest": "^7.3.0"
   }
 }
